@@ -5,49 +5,81 @@
 本專案採用 FastAPI (Python 3.11+), SQLAlchemy 2.0 (搭配 AsyncMySQL 驅動), Pydantic v2, Passlib, Python-JOSE (JWT) 等技術構建。目錄結構遵循分層架構設計，旨在實現關注點分離 (Separation of Concerns) 和高內聚低耦合。
 
 ```
-freelancer_match_backend/
-├── app/                    # FastAPI 應用程式核心程式碼
-│   ├── core/               # 核心配置與基礎建設
-│   │   ├── config.py       # Pydantic Settings，載入 .env 環境變數 (資料庫 URL, JWT 設定等)
-│   │   ├── database.py     # SQLAlchemy 非同步引擎與 Session 設定，提供 get_db 依賴項
-│   │   └── security.py     # 安全相關功能：密碼雜湊 (Bcrypt), JWT Token 產生/驗證, get_current_user 依賴項
-│   ├── models/             # SQLAlchemy ORM 模型定義
-│   │   ├── employer_profile.py # 雇主 Profile (`employer_profiles`) 資料表模型
-│   │   ├── freelancer_profile.py # 自由工作者 Profile (`freelancer_profiles`) 資料表模型
-│   │   ├── project.py      # 案件 (`projects`) 及案件技能關聯 (`project_skill_tags`) 資料表模型
-│   │   ├── skill_tag.py    # 技能標籤 (`skill_tags`) 及工作者技能關聯 (`user_skill_tags`) 資料表模型
-│   │   └── user.py         # 使用者 (`users`) 資料表模型
-│   ├── repositories/       # 資料存取層 (Repository Pattern)：封裝 SQLAlchemy 查詢邏輯
-│   │   ├── profile_repo.py # 處理 `freelancer_profiles` 和 `employer_profiles` 的 CRUD 及技能更新
-│   │   ├── project_repo.py # 處理 `projects` 和 `project_skill_tags` 的 CRUD 及複合查詢
-│   │   ├── skill_tag_repo.py # 處理 `skill_tags` 的查詢
-│   │   └── user_repo.py    # 處理 `users` 的 CRUD
-│   ├── routers/            # API 端點層 (Controllers)：定義 FastAPI 路由
-│   │   ├── auth_router.py  # 身份驗證路由 (`/auth/register`, `/auth/token`)
-│   │   ├── profile_router.py # Profile 相關路由 (`/profiles/me`, `/profiles/freelancer/skills`, etc.)
-│   │   ├── project_router.py # 案件相關路由 (`/projects/`, `/projects/my`, `/projects/{id}`)
-│   │   ├── recommendation_router.py # 推薦相關路由 (`/recommendations/jobs`, `/recommendations/freelancers`)
-│   │   ├── skill_tag_router.py # 技能標籤路由 (`/tags/`)
-│   │   └── user_router.py  # 使用者資訊路由 (`/users/me`)
-│   ├── schemas/            # Pydantic 資料驗證模型 (用於 Request/Response Body)
-│   │   ├── profile_schema.py # Profile 相關 API 的請求/回應格式定義 (含推薦 Schema)
-│   │   ├── project_schema.py # 案件相關 API 的請求/回應格式定義 (含推薦 Schema)
-│   │   ├── skill_tag_schema.py # 技能標籤 API 的回應格式定義
-│   │   └── user_schema.py  # 使用者/認證 API 的請求/回應格式定義 (Login, Create, Out, Token)
-│   ├── services/           # 業務邏輯層 (Service Layer)：協調 Repositories 處理複雜邏輯與權限控制
-│   │   ├── auth_service.py # 註冊/登入業務邏輯
-│   │   ├── profile_service.py # Profile 建立/更新/讀取業務邏輯
-│   │   ├── project_service.py # 案件刊登/搜尋/讀取業務邏輯
-│   │   ├── recommendation_service.py # 推薦業務邏輯 (調用 recommender)
-│   │   └── skill_tag_service.py # 技能標籤讀取業務邏輯
-│   └── utils/              # 共用工具函式
-│       └── recommender.py  # 推薦演算法核心 (Levenshtein 相似度計算)
-│   └── main.py             # FastAPI 應用程式入口，掛載 Middleware (CORS) 和 Routers
-├── venv/                   # Python 虛擬環境
-├── .env                    # 環境變數配置文件 (資料庫連線字串, JWT Secret 等)
-├── .gitignore              # Git 忽略配置
-├── README.md               # 專案說明文件
-└── requirements.txt        # Python 依賴包列表
+FREELANCER_MATCH_BACKEND/
+├── app/
+│   ├── core/
+│   │   ├── config.py
+│   │   ├── database.py
+│   │   └── security.py
+│   │
+│   ├── models/
+│   │   ├── contract.py
+│   │   ├── employer_profile.py
+│   │   ├── freelancer_profile.py
+│   │   ├── message.py           # (M8.1 新增)
+│   │   ├── notification.py      # (M8.3 新增)
+│   │   ├── project.py
+│   │   ├── proposal.py
+│   │   ├── skill_tag.py
+│   │   └── user.py
+│   │
+│   ├── repositories/
+│   │   ├── contract_repo.py
+│   │   ├── message_repo.py      # (M8.1 新增)
+│   │   ├── notification_repo.py # (M8.3 新增)
+│   │   ├── profile_repo.py
+│   │   ├── project_repo.py
+│   │   ├── proposal_repo.py
+│   │   ├── skill_tag_repo.py
+│   │   └── user_repo.py
+│   │
+│   ├── routers/
+│   │   ├── auth_router.py
+│   │   ├── contract_router.py
+│   │   ├── message_router.py    # (M8.1 新增)
+│   │   ├── notification_router.py # (M8.3 新增)
+│   │   ├── profile_router.py
+│   │   ├── project_router.py
+│   │   ├── proposal_router.py
+│   │   ├── recommendation_router.py
+│   │   ├── skill_tag_router.py
+│   │   └── user_router.py
+│   │
+│   ├── schemas/
+│   │   ├── contract_schema.py
+│   │   ├── message_schema.py    # (M8.1 新增)
+│   │   ├── notification_schema.py # (M8.3 新增)
+│   │   ├── profile_schema.py
+│   │   ├── project_schema.py
+│   │   ├── proposal_schema.py
+│   │   ├── skill_tag_schema.py
+│   │   └── user_schema.py
+│   │
+│   ├── services/
+│   │   ├── auth_service.py
+│   │   ├── contract_service.py    # (M8.3 修改)
+│   │   ├── message_service.py   # (M8.1 新增)
+│   │   ├── notification_service.py # (M8.3 新增)
+│   │   ├── profile_service.py
+│   │   ├── project_service.py
+│   │   ├── proposal_service.py    # (M8.3 修改)
+│   │   ├── recommendation_service.py
+│   │   └── skill_tag_service.py
+│   │
+│   ├── utils/
+│   │   └── recommender.py
+│   │
+│   └── main.py                  # (M8.1/M8.3 修改)
+│
+├── static/
+│   └── uploads/
+│       └── proposals/
+│
+├── tests/
+├── venv/
+├── .env
+├── .gitignore
+└── README.md
 ```
 
 **架構說明：**

@@ -1,3 +1,4 @@
+# app/routers/project_router.py
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,7 +102,7 @@ async def read_my_projects(
     my_projects = await service.get_my_projects(current_user)
     return my_projects
 
-
+# 拿到特定的案件詳情
 @router.get("/{project_id}", response_model=ProjectOut)
 async def get_project_by_id(
     project_id: str,

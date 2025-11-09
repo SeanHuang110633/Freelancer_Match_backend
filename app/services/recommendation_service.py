@@ -21,7 +21,7 @@ class RecommendationService:
         self.project_repo = ProjectRepository(db)
         self.db = db
 
-    async def get_job_recommendations(self, user: User) -> List[Project]:
+    async def get_job_recommendations(self, user: User, limit: int = 10, offset: int = 0):
 
         """
         Use Case 5.1: 推薦案件給自由工作者
@@ -60,22 +60,26 @@ class RecommendationService:
 
         # 4. 呼叫演算法
         scored_projects = calculate_recommendation_scores(
-            user_skill_names, 
+            user_skill_names,
             projects_data_for_algo
         )
 
-        # 5. (修改) 處理結果 - 提取物件和分數
+        total = len(scored_projects)
+        # apply offset/limit (already sorted by algorithm)
+        sliced = scored_projects[offset: offset + limit]
+
+        # 5. 處理結果 - 提取物件和分數
         recommendations_with_scores = []
-        for item in scored_projects[:10]: # 取前 10 筆
+        for item in sliced:
             recommendations_with_scores.append({
-                "project": item["item_object"], # 原始 Project 物件
-                "recommendation_score": round(item["score"], 2) # 分數四捨五入到小數點後兩位
+                "project": item["item_object"],  # 原始 Project 物件
+                "recommendation_score": round(item["score"], 2)  # 分數四捨五入到小數點後兩位
             })
 
-        return recommendations_with_scores # 回傳 Dict 列表
+        return {"items": recommendations_with_scores, "total": total}  # 回傳分頁結構
 
     
-    async def get_freelancer_recommendations(self, user: User) -> List[FreelancerProfile]:
+    async def get_freelancer_recommendations(self, user: User, limit: int = 10, offset: int = 0):
         """
         Use Case 5.2: 推薦工作者給雇主
         
@@ -129,20 +133,23 @@ class RecommendationService:
 
         # 5. 呼叫演算法
         scored_freelancers = calculate_recommendation_scores(
-            employer_skill_names, 
+            employer_skill_names,
             freelancers_data_for_algo
         )
 
         logging.info(f"1 . Scored freelancers: {scored_freelancers}")
 
-        # 6. (修改) 處理結果 - 提取物件和分數
+        total = len(scored_freelancers)
+        sliced = scored_freelancers[offset: offset + limit]
+
+        # 6. 處理結果 - 提取物件和分數
         recommendations_with_scores = []
-        for item in scored_freelancers[:10]: # 取前 10 筆
-             recommendations_with_scores.append({
-                "profile": item["item_object"], # 原始 FreelancerProfile 物件
-                "recommendation_score": round(item["score"], 2) # 分數四捨五入到小數點後兩位
+        for item in sliced:
+            recommendations_with_scores.append({
+                "profile": item["item_object"],  # 原始 FreelancerProfile 物件
+                "recommendation_score": round(item["score"], 2)  # 分數四捨五入到小數點後兩位
             })
 
         logging.info(f"2 . Scored freelancers: {scored_freelancers}")
 
-        return recommendations_with_scores
+        return {"items": recommendations_with_scores, "total": total}

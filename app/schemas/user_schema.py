@@ -1,3 +1,4 @@
+# app/schemas/user_schema.py
 from pydantic import BaseModel, EmailStr, Field, field_validator
 import re
 from app.models.user import UserRoleEnum

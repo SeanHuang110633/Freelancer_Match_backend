@@ -1,3 +1,6 @@
+# app/repositories/project_repo.py
+# (您可以直接複製並取代整個檔案)
+
 import logging
 import uuid
 from typing import List, Optional
@@ -14,6 +17,7 @@ from fastapi import HTTPException
 # 匯入 Models
 from app.models.project import Project, ProjectSkillTag
 from app.models.user import User
+from app.models.proposal import Proposal # --- (新增) --- 為了 Eager Loading
 
 # 匯入 Schemas
 from app.schemas.project_schema import ProjectCreate, ProjectUpdate
@@ -21,7 +25,7 @@ from app.schemas.project_schema import ProjectCreate, ProjectUpdate
 class ProjectRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
-
+    # 建立新案件
     async def create_project(self, project_data: ProjectCreate, employer_id: str) -> Project:
         """
         建立新案件 (Project) 並同時寫入 案件-技能 (ProjectSkillTag) 關聯表
@@ -62,7 +66,7 @@ class ProjectRepository:
             raise HTTPException(status_code=404, detail="剛建立的案件找不到")
 
         return complete_project # 回傳這個 Pydantic 可以安全序列化的物件
-
+    # 獲取單一案件 (包含技能)
     async def get_project_by_id(self, project_id: str) -> Project | None:
         """
         透過 ID 獲取單一案件 (包含技能)
@@ -73,7 +77,28 @@ class ProjectRepository:
         result = await self.db.execute(stmt)
         return result.scalars().first()
 
+    # 拿到某個案件的所有提案
+    # 補上 ProposalService 需要的函式
+    async def get_project_by_id_with_proposals(self, project_id: str) -> Project | None:
+        """
+        透過 ID 獲取單一案件，並 Eager Load (預先載入) 所有關聯的提案
+        以及提案人的資訊 (用於 ProjectWithProposalsOut Schema)
+        """
+        stmt = select(Project).where(Project.project_id == project_id).options(
+            # 1. 載入案件的提案列表 (project.proposals)
+            selectinload(Project.proposals).options(
+                # 2. 針對「每一個」提案，載入提案人 (proposal.freelancer)
+                selectinload(Proposal.freelancer).options(
+                    # 3. 針對「每一個」提案人，載入其 Profile (user.freelancer_profile)
+                    selectinload(User.freelancer_profile)
+                )
+            )
+        )
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
 
+
+    # 條件搜尋案件
     async def list_projects(
         self,
         tag_ids: Optional[List[str]] = None,
@@ -87,8 +112,6 @@ class ProjectRepository:
         3. 工作型態 (work_type): 精確比對
         """
         
-        # (新增日誌) 打印收到的參數
-        logger.info(f"list_projects called with: tag_ids={tag_ids}, location='{location}', work_type='{work_type}'")
 
         # 基礎查詢 (SELECT * FROM projects)
         # 我們指定 select(Project) 而非 select(Project.project_id, ...)，
@@ -138,6 +161,7 @@ class ProjectRepository:
         
         return result.scalars().all()
 
+    # 獲取所有「招募中」的案件 (包含技能)
     async def list_active_projects_with_skills(self) -> List[Project]:
         """
         獲取所有 '招募中' 的案件，並預先載入技能

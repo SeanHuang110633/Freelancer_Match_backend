@@ -43,6 +43,14 @@ class FreelancerRecommendationOut(BaseModel):
     class Config:
         from_attributes = True # 允許從非 dict 物件建立
 
+
+class PaginatedFreelancerRecommendationOut(BaseModel):
+    items: List[FreelancerRecommendationOut]
+    total: int = Field(..., description="Total number of matched candidates")
+
+    class Config:
+        from_attributes = True
+
 # --- 雇主 (Employer) ---
 class EmployerProfileBase(BaseModel):
     company_name: str | None = Field(None, max_length=255)

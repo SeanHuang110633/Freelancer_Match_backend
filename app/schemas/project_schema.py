@@ -1,6 +1,8 @@
+# app/schemas/project_schema.py
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
+from app.schemas.proposal_schema import ProposalOutWithFreelancer
 from app.schemas.skill_tag_schema import SkillTagOut # 複用我們在 Step 4 建立的 Schema
 
 # 1. 用於在 ProjectOut 中顯示巢狀的技能標籤
@@ -63,3 +65,22 @@ class ProjectRecommendationOut(BaseModel):
 
     class Config:
         from_attributes = True # 允許從非 dict 物件建立
+
+# 7. 分頁的推薦案件回應格式
+class PaginatedProjectRecommendationOut(BaseModel):
+    items: List[ProjectRecommendationOut]
+    total: int = Field(..., description="Total number of matched candidates")
+
+    class Config:
+        from_attributes = True
+
+
+# 8. 用於雇主管理案件的提案，回傳案件詳情以及所有關聯的提案列表
+class ProjectWithProposalsOut(ProjectOut):
+    """
+    用於雇主管理介面，回傳案件詳情以及所有關聯的提案列表
+    """
+    proposals: List[ProposalOutWithFreelancer] = []
+
+    class Config:
+        from_attributes = True
