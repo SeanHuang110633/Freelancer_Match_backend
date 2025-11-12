@@ -16,7 +16,8 @@ class FreelancerProfileBase(BaseModel):
     full_name: str | None = Field(None, max_length=100)
     bio: str | None = None
     phone: str | None = Field(None, max_length=50)
-    avatar_url: HttpUrl | None = Field(None, description="頭像 URL")
+    # avatar_url: HttpUrl | None = Field(None, description="頭像 URL") # 上線後要改回來這個
+    avatar_url: str | None = Field(None, description="頭像 URL") # 測試階段先用 str
     social_links: dict | None = {} # 接收 JSON/dict
 
 class FreelancerProfileCreate(FreelancerProfileBase):
@@ -57,7 +58,8 @@ class EmployerProfileBase(BaseModel):
     company_bio: str | None = None
     contact_email: str | None = Field(None, max_length=255)
     contact_phone: str | None = Field(None, max_length=50)
-    company_logo_url: HttpUrl | None = Field(None, description="公司 Logo URL")
+    # company_logo_url: HttpUrl | None = Field(None, description="公司 Logo URL") # 上線後要改回來這個
+    company_logo_url: str | None = Field(None, description="公司 Logo URL") # 測試階段先用 str
     social_links: dict | None = {}
 
 class EmployerProfileCreate(EmployerProfileBase):

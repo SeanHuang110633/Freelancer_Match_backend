@@ -11,7 +11,9 @@ from app.services.proposal_service import ProposalService
 from app.schemas.proposal_schema import (
     ProposalCreate, 
     ProposalOut, 
-    ProposalOutWithFreelancer # --- (新增) --- 確保匯入巢狀 Schema
+    ProposalOutWithFreelancer, # --- (新增) --- 確保匯入巢狀 Schema
+    ProposalOutWithProject,
+    ProposalOutWithFullProject
 )
 from app.schemas.project_schema import ProjectWithProposalsOut # 匯入新的 Schema
 from pydantic import BaseModel # 用於定義狀態更新的請求 body
@@ -123,12 +125,12 @@ async def withdraw_proposal(
         return # 成功刪除，回傳 204
     except HTTPException as e:
         raise e
-
+    
 
 # -----------------------------------------------------------------
 # 4. (工作者) 檢視自己提交的所有提案
 # -----------------------------------------------------------------
-@router.get("/my", response_model=List[ProposalOut])
+@router.get("/my", response_model=List[ProposalOutWithProject])
 async def get_my_proposals(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -176,3 +178,47 @@ async def update_proposal_status(
         return updated_proposal
     except HTTPException as e:
         raise e
+
+# (新增) 需求三：獲取提案詳情
+@router.get(
+    "/{proposal_id}", 
+    response_model=ProposalOutWithFullProject,
+    summary="獲取提案詳情 (三欄式佈局)"
+)
+async def api_get_proposal_details(
+    proposal_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    (工作者) 獲取自己單一提案的詳細資料。
+    (用於三欄式檢視/編輯頁面)
+    """
+    service = ProposalService(db)
+    return await service.get_proposal_details(proposal_id, current_user)
+
+# (新增) 需求三：更新提案
+@router.put(
+    "/{proposal_id}", 
+    response_model=ProposalOut,
+    summary="更新提案內容 (Form-Data)"
+)
+async def api_update_proposal(
+    proposal_id: str,
+    brief_description: str = Form(...),
+    attachment: Optional[UploadFile] = File(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    (工作者) 更新「已提交」的提案內容。
+    - 必須傳送 form-data。
+    - 附件 (attachment) 必須是 PDF。
+    """
+    service = ProposalService(db)
+    return await service.update_proposal(
+        proposal_id=proposal_id,
+        user=current_user,
+        brief_description=brief_description,
+        attachment=attachment
+    )

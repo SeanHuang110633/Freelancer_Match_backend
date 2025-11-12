@@ -6,12 +6,14 @@ import uuid
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
+from app.models.user import User
+from app.models.employer_profile import EmployerProfile
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import func # 用於 ILIKE (不分大小寫模糊比對)
+from sqlalchemy import func, delete 
 from fastapi import HTTPException
 
 # 匯入 Models
@@ -69,11 +71,23 @@ class ProjectRepository:
     # 獲取單一案件 (包含技能)
     async def get_project_by_id(self, project_id: str) -> Project | None:
         """
-        透過 ID 獲取單一案件 (包含技能)
+        透過 ID 獲取單一案件 (包含技能)及雇主資訊
         
         (這個方法是正確的，因為 select(Project) 會觸發 Model 上的 lazy="selectin")
         """
+        
+        # (修改)
         stmt = select(Project).where(Project.project_id == project_id)
+        
+        # (重要：新增 Eager Loading 策略)
+        # 載入 Project.employer (User)
+        # 接著載入 User.employer_profile (EmployerProfile)
+        stmt = stmt.options(
+            joinedload(Project.employer).
+            selectinload(User.employer_profile)
+        )
+        # (修改結束)
+        
         result = await self.db.execute(stmt)
         return result.scalars().first()
 
@@ -117,6 +131,14 @@ class ProjectRepository:
         # 我們指定 select(Project) 而非 select(Project.project_id, ...)，
         # 這樣才能觸發 Model 上的 lazy="selectin" 來自動載入 skills
         stmt = select(Project)
+
+        # (新增) 修正 Bug 1：
+        # 即使是列表查詢，也必須 Eager Load ProjectOut 所需的巢狀資料
+        stmt = stmt.options(
+            joinedload(Project.employer).
+            selectinload(User.employer_profile)
+        )
+        # (新增結束)
 
         # 1. 處理技能標籤 (tag_ids)
         if tag_ids:
@@ -172,6 +194,14 @@ class ProjectRepository:
         # SQLAlchemy 會自動處理 'skills' 和 'skills.tag' 的 Eager Loading
         stmt = select(Project).where(Project.status == '招募中')
 
+        # (重要：新增 Eager Loading 策略)
+        # 這裡也必須載入 Project.employer (User)
+        # 接著載入 User.employer_profile (EmployerProfile)
+        stmt = stmt.options(
+            joinedload(Project.employer).
+            selectinload(User.employer_profile)
+        )
+
         result = await self.db.execute(stmt)
         return result.scalars().all()
     
@@ -182,6 +212,56 @@ class ProjectRepository:
         """
         # 依舊利用 lazy="selectin" 自動載入 skills
         stmt = select(Project).where(Project.employer_id == employer_id).order_by(Project.created_at.desc()) # 按建立時間排序
+
+        # (重要：新增 Eager Loading 策略)
+        # 這裡也必須載入 Project.employer (User)
+        # 接著載入 User.employer_profile (EmployerProfile)
+        stmt = stmt.options(
+            joinedload(Project.employer).
+            selectinload(User.employer_profile)
+        )
+        # (修改結束)
         
         result = await self.db.execute(stmt)
         return result.scalars().all()
+    
+    # (新增) 需求二：通用的更新方法
+    async def update_project(self, project: Project) -> Project:
+        """
+        (U) 儲存對現有 Project 物件的變更
+        """
+        await self.db.commit()
+        await self.db.refresh(project)
+        # (重要) commit 後，我們需要重新獲取 Eager Loaded 的版本
+        refreshed_project = await self.get_project_by_id(project.project_id)
+        if refreshed_project is None:
+             # 理論上不可能
+            raise HTTPException(status_code=500, detail="Failed to re-fetch project after update")
+        return refreshed_project
+
+    # (新增) 需求二：更新案件技能標籤
+    async def update_project_skills(self, project_id: str, tag_ids: List[str]):
+        """
+        (U) 覆蓋案件的技能標籤
+        """
+        # 1. 刪除舊標籤
+        stmt_delete = delete(ProjectSkillTag).where(
+            ProjectSkillTag.project_id == project_id
+        )
+        await self.db.execute(stmt_delete)
+        await self.db.flush() # 確保 DELETE 執行
+
+        # 2. 新增新標籤
+        new_skill_links = []
+        for tag_id in tag_ids:
+            new_link = ProjectSkillTag(
+                project_skill_tag_id=str(uuid.uuid4()),
+                project_id=project_id,
+                tag_id=tag_id
+            )
+            new_skill_links.append(new_link)
+        
+        if new_skill_links:
+            self.db.add_all(new_skill_links)
+        
+        # (注意) commit 由上層的 update_project 執行

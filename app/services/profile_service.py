@@ -8,7 +8,7 @@ from app.repositories.profile_repo import ProfileRepository
 from app.schemas.profile_schema import (
     FreelancerProfileCreate, EmployerProfileCreate, UserSkillsUpdate,FreelancerProfileUpdate, EmployerProfileUpdate
 )
-from typing import Union
+from typing import Union, List, Optional
 
 class ProfileService:
     def __init__(self, db: AsyncSession):
@@ -87,3 +87,17 @@ class ProfileService:
         #    raise HTTPException(status.HTTP_403_FORBIDDEN, "此 Profile 為私人")
             
         return profile
+    
+    # (新增) 需求：雇主搜尋工作者
+    async def search_freelancers(
+        self, tag_ids: Optional[List[str]] = None
+    ) -> List[FreelancerProfile]:
+        """
+        業務邏輯：搜尋公開的工作者
+        (目前業務邏輯主要在 Repository 的查詢中)
+        """
+        # 呼叫我們在 Repo 中建立的新方法
+        profiles = await self.repo.list_public_freelancers_by_skills(
+            tag_ids=tag_ids
+        )
+        return profiles

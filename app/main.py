@@ -1,6 +1,9 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os # (!! 修正新增 !!)：匯入 os 模組
+from fastapi.staticfiles import StaticFiles # (!! 修正新增 !!)：匯入 StaticFiles
+
 from app.routers import (
     auth_router, user_router, 
     profile_router, skill_tag_router, 
@@ -37,6 +40,27 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__) # 建立一個 logger 實例
 
 app = FastAPI()
+
+# --- (!! 修正新增 !!)：設定靜態檔案服務 ---
+# 1. 定義靜態檔案目錄
+static_dir = "static"
+
+# 2. 確保目錄存在
+if not os.path.exists(static_dir):
+    os.makedirs(static_dir)
+    logger.info(f"已建立靜態資料夾: {static_dir}")
+
+# 3. (核心) 掛載(Mount) static 目錄
+# 這會讓所有 /static/ 開頭的 URL 請求，都去 "static" 資料夾尋找檔案
+# 例如：/static/avatar/avatar_1.webp
+app.mount(
+    "/static", 
+    StaticFiles(directory=static_dir), 
+    name="static"
+)
+logger.info(f"已掛載靜態檔案目錄: {static_dir}")
+# --- (!! 修正結束 !!) ---
+
 
 # --- 設定 CORS (跨來源資源共用) ---
 # 允許所有來源 (在生產環境中應限制)

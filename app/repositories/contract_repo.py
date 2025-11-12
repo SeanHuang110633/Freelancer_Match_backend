@@ -14,6 +14,7 @@ from app.models.project import Project
 from app.models.proposal import Proposal
 from app.models.user import User
 from app.models.freelancer_profile import FreelancerProfile
+from app.models.employer_profile import EmployerProfile
 from app.models.skill_tag import UserSkillTag, SkillTag
 
 
@@ -30,8 +31,13 @@ class ContractRepository:
         定義 ContractOut Schema 所需的 Eager Loading 策略，避免 N+1 查詢
         """
         return [
-            # 1. 載入案件資訊 (1-to-1)
-            joinedload(Contract.project),
+            # 1. 載入案件資訊 (1-to-1)，
+            #    並且必須巢狀載入 ProjectOut 所需的 'employer.employer_profile'
+            joinedload(Contract.project).options(
+                joinedload(Project.employer).
+                selectinload(User.employer_profile)
+            ),
+            # (修改結束)
             
             # 2. 載入雇主 (User) 資訊 (1-to-1)
             joinedload(Contract.employer),

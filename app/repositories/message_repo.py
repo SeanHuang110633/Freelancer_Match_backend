@@ -10,6 +10,7 @@ import uuid
 from app.models.message import ChatRoom, ChatRoomParticipant, Message
 from app.models.user import User
 from app.models.project import Project 
+from app.models.employer_profile import EmployerProfile # <-- (新增)
 
 class MessageRepository:
     def __init__(self, db: AsyncSession):
@@ -43,10 +44,15 @@ class MessageRepository:
             select(ChatRoomParticipant)
             .where(ChatRoomParticipant.user_id == user_id)
             .options(
-                # (修正) 建立第一個查詢鏈: 
-                # Participant -> Room -> Project
+                # (重要：修正 Bug 3) 
+                # 建立第一個查詢鏈:
+                # Participant -> Room -> Project -> Employer -> EmployerProfile
                 joinedload(ChatRoomParticipant.room)
-                    .joinedload(ChatRoom.project, innerjoin=False), #
+                    .joinedload(ChatRoom.project, innerjoin=False)
+                    .options( # <-- (新增巢狀 options)
+                        joinedload(Project.employer).
+                        selectinload(User.employer_profile)
+                    ),
                 
                 # (修正) 建立第二個查詢鏈: 
                 # Participant -> Room -> All Participants -> Participant's User

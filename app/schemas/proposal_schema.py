@@ -1,11 +1,17 @@
 # app/schemas/proposal_schema.py
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
-from typing import Optional
+
+from typing import Optional, TYPE_CHECKING
 
 # 匯入我們在 M1-M5 已經定義好的 UserOut 或 Profile Schema
 # 這裡假設我們有一個精簡的 Schema 用於顯示提案者資訊
 from app.schemas.profile_schema import FreelancerProfileOut 
+# from app.schemas.project_schema import ProjectOut # <-- 會造成循環匯入，改用下方的簡化版本
+
+# (新增) 僅在類型檢查時 (IDE) 匯入，避免
+if TYPE_CHECKING:
+    from app.schemas.project_schema import ProjectOut
 
 # --- 基礎模型 ---
 class ProposalBase(BaseModel):
@@ -31,6 +37,14 @@ class ProposalOut(ProposalBase):
     updated_at: datetime
 
 
+# Minimal project brief used when embedding project info in proposal responses.
+class ProjectBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    title: str
+
+
 # 這個 Schema 用來代表 'freelancer' (User 物件) 以及他巢狀的 Profile
 class UserOutWithProfile(BaseModel):
     """
@@ -50,3 +64,26 @@ class UserOutWithProfile(BaseModel):
 class ProposalOutWithFreelancer(ProposalOut):
     # 嵌套顯示提案者的 Profile 資訊
     freelancer: Optional[UserOutWithProfile] = None
+
+
+class ProposalOutWithProject(ProposalOut):
+    """
+    Proposal output that includes a brief nested Project object (project_id + title).
+    This avoids circular imports with project_schema while providing the frontend
+    with the minimal project info needed for listing proposals.
+    """
+    project: Optional[ProjectBrief] = None
+
+# (新增) 需求三：用於「提案詳情頁」的 Schema
+class ProposalOutWithFullProject(ProposalOut):
+    """
+    用於提案詳情頁，
+    包含 ProposalOut，並巢狀完整的 ProjectOut (ProjectOut 包含 employer.employer_profile)
+    """
+    
+    # (重要修改) 
+    # 將類型提示改為字串 "ProjectOut"，這就是 Forward Reference
+    project: Optional["ProjectOut"] = None 
+
+    class Config:
+        from_attributes = True

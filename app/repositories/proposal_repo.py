@@ -8,6 +8,8 @@ import uuid
 
 from app.models.proposal import Proposal
 from app.models.user import User # 用於 joinedload
+from app.models.project import Project
+from app.models.employer_profile import EmployerProfile
 
 class ProposalRepository:
     def __init__(self, db: AsyncSession):
@@ -114,3 +116,21 @@ class ProposalRepository:
         await self.db.delete(proposal)
         await self.db.commit()
         return
+    
+    # (新增) 需求三：獲取提案詳情 (三欄式佈局) 所需的查詢
+    async def get_proposal_by_id_with_details(self, proposal_id: str) -> Optional[Proposal]:
+        """
+        獲取提案，並 Eager Load 巢狀的 project -> employer -> employer_profile
+        """
+        stmt = select(Proposal).where(Proposal.proposal_id == proposal_id).options(
+            # 依據 Schema 需求 (ProposalOutWithFullProject -> ProjectOut -> UserOutWithEmployerProfile)
+            # 載入 Proposal.project
+            joinedload(Proposal.project).options(
+                # 載入 Project.employer
+                joinedload(Project.employer)
+                # 載入 User.employer_profile
+                .selectinload(User.employer_profile)
+            )
+        )
+        result = await self.db.execute(stmt)
+        return result.scalars().first()

@@ -13,11 +13,10 @@ from app.models.proposal import Proposal
 from app.models.project import Project
 from app.repositories.proposal_repo import ProposalRepository
 from app.repositories.project_repo import ProjectRepository
-from app.schemas.proposal_schema import ProposalCreate
+from app.schemas.proposal_schema import ProposalCreate, ProposalOutWithFullProject
 
 from app.services.notification_service import NotificationService # (M8.3 新增)
-# (修正) 移除重複的 import
-# from app.repositories.project_repo import ProjectRepository
+
 
 # --- 檔案上傳設定 (保持不變) ---
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -106,19 +105,96 @@ class ProposalService:
 
     # ... delete_proposal (保持不變) ...
     async def delete_proposal(self, proposal_id: str, current_user: User) -> None:
+        """
+        (工作者) 撤回提案 (Use Case 6.2)
+        """
         proposal = await self.proposal_repo.get_proposal_by_id(proposal_id)
         if not proposal:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
+
+        # 權限檢查：是否為提案人本人
         if proposal.freelancer_id != current_user.user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限刪除此提案")
-        if proposal.status != "已提交":
+        
+        # (修改) 允許 '雇主已撤銷案件' 狀態的提案被刪除 (清理)
+        # 業務規則：只有 '已提交' 狀態的提案可以撤回
+        if proposal.status not in ["已提交", "雇主已撤銷案件"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="提案已被處理，無法撤回")
+        
+        # (可選) 刪除實體檔案
         if proposal.attachment_url:
+            # (修正) 修正 base_dir 路徑
+            # BASE_DIR = Path(__file__).resolve().parent.parent.parent
             file_path = BASE_DIR / proposal.attachment_url.lstrip('/')
             if os.path.exists(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    print(f"Failed to delete file {file_path}: {e}") # log warning
+
         await self.proposal_repo.delete_proposal(proposal)
         return
+
+    # (新增) 需求三：獲取提案詳情
+    async def get_proposal_details(
+        self, proposal_id: str, user: User
+    ) -> Proposal:
+        """
+        (工作者) 獲取單一提案詳情 (三欄式佈局用)
+        """
+        # 1. 呼叫 Repo 獲取巢狀資料
+        proposal = await self.proposal_repo.get_proposal_by_id_with_details(proposal_id)
+        if not proposal:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
+
+        # 2. 權限檢查 (必須是提案人)
+        if proposal.freelancer_id != user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限檢視此提案")
+            
+        return proposal
+
+    # (新增) 需求三：更新提案
+    async def update_proposal(
+        self, 
+        proposal_id: str, 
+        user: User, 
+        brief_description: str, 
+        attachment: Optional[UploadFile]
+    ) -> Proposal:
+        """
+        (工作者) 更新「已提交」的提案
+        """
+        # 1. 獲取並檢查權限和狀態
+        proposal = await self.proposal_repo.get_proposal_by_id(proposal_id)
+        if not proposal:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
+        if proposal.freelancer_id != user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限修改此提案")
+        if proposal.status != "已提交":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="提案已被處理，無法修改")
+
+        # 2. 更新文字欄位
+        proposal.brief_description = brief_description
+
+        # 3. 處理檔案
+        if attachment:
+            # 3a. 儲存新檔案
+            new_attachment_url = await self._save_upload_file(attachment)
+            
+            # 3b. 刪除舊檔案
+            if proposal.attachment_url:
+                old_file_path = BASE_DIR / proposal.attachment_url.lstrip('/')
+                if os.path.exists(old_file_path):
+                    try:
+                        os.remove(old_file_path)
+                    except Exception as e:
+                        print(f"Failed to delete old file {old_file_path}: {e}") # log warning
+            
+            # 3c. 更新 DB 欄位
+            proposal.attachment_url = new_attachment_url
+
+        # 4. 提交
+        return await self.proposal_repo.update_proposal(proposal)
 
     # ... get_project_with_proposals (保持不變) ...
     async def get_project_with_proposals(self, project_id: str, employer: User) -> Project:

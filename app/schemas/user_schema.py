@@ -1,7 +1,9 @@
 # app/schemas/user_schema.py
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 import re
 from app.models.user import UserRoleEnum
+from app.schemas.profile_schema import EmployerProfileOut # (新增) 匯入 EmployerProfileOut
+from typing import Optional
 
 # 登入請求的格式
 class UserLogin(BaseModel):
@@ -47,3 +49,21 @@ class UserOut(BaseModel):
 
     class Config:
         from_attributes = True # 舊版 Pydantic 叫 orm_mode = True
+
+# 3. 用於巢狀回傳雇主及其 Profile
+class UserOutWithEmployerProfile(BaseModel):
+    """
+    一個精簡的 Schema，用於在 Project 或 Contract 中顯示雇主資訊
+    它會讀取 User model 上的欄位
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: str
+    email: EmailStr
+    role: UserRoleEnum
+    
+    # (重要)
+    # 這裡的欄位 'employer_profile'
+    # 必須對應到 'models/user.py' 中
+    # User Model 上的 'employer_profile' relationship
+    employer_profile: Optional[EmployerProfileOut] = None

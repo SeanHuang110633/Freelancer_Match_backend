@@ -2,8 +2,9 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
-from app.schemas.proposal_schema import ProposalOutWithFreelancer
+from app.schemas.proposal_schema import ProposalOutWithFreelancer, ProposalOutWithFullProject
 from app.schemas.skill_tag_schema import SkillTagOut # 複用我們在 Step 4 建立的 Schema
+from app.schemas.user_schema import UserOutWithEmployerProfile
 
 # 1. 用於在 ProjectOut 中顯示巢狀的技能標籤
 class ProjectSkillTagOut(BaseModel):
@@ -49,9 +50,10 @@ class ProjectUpdate(BaseModel):
 # 5. 回傳給前端的案件資料 (Output)
 class ProjectOut(ProjectBase):
     project_id: str
-    employer_id: str
+    # (修改) 移除 employer_id，改用巢狀物件
+    # employer_id: str
+    employer: UserOutWithEmployerProfile # <-- (修改)
     status: str
-    
     # (重要) 巢狀回傳完整的技能標籤資料
     skills: List[ProjectSkillTagOut] = []
 
@@ -84,3 +86,13 @@ class ProjectWithProposalsOut(ProjectOut):
 
     class Config:
         from_attributes = True
+
+
+# (新增) 需求二：用於更新狀態的 Schema
+class ProjectStatusUpdate(BaseModel):
+    status: str = Field(..., enum=['招募中', '已關閉', '已成案'])
+
+# (重要新增) 
+# 在檔案的最底部，所有 Class 都定義完成後
+# 呼叫 .model_rebuild() 來解析 ProposalOutWithFullProject 中的 "ProjectOut" 字串
+ProposalOutWithFullProject.model_rebuild()

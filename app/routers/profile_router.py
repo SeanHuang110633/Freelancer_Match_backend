@@ -1,5 +1,5 @@
 # app/routers/profile_router.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -11,6 +11,11 @@ from app.schemas.profile_schema import (
     UserSkillsUpdate, UserSkillTagOut,FreelancerProfileUpdate, EmployerProfileUpdate
 )
 from typing import Union, List
+
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 router = APIRouter(
     prefix="/profiles",
@@ -97,3 +102,35 @@ async def get_public_freelancer_profile(
     service = ProfileService(db)
     profile = await service.get_freelancer_profile(user_id)
     return profile
+
+
+# (新增) 需求：雇主搜尋工作者
+@router.get(
+    "/freelancers/search", 
+    response_model=List[FreelancerProfileOut],
+    summary="搜尋公開的工作者"
+)
+async def search_public_freelancers(
+    request: Request, # 注入 Request 以處理陣列參數
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    (雇主) 依技能標籤搜尋「公開」的工作者 Profile。
+    
+    前端應使用 `tag_id[]` 作為 query 參數名稱來傳遞陣列。
+    """
+    # 仿照 project_router.py，從 query_params 手動解析陣列
+    logger.info("Request query parameters: %s", request.query_params)
+    # 支援兩種前端傳陣列的參數名稱：`tag_id` (tag_id=...&tag_id=...) 或 `tag_id[]` (tag_id[]=...)
+    tag_ids_from_query = request.query_params.getlist("tag_id")
+    if not tag_ids_from_query:
+        tag_ids_from_query = request.query_params.getlist("tag_id[]")
+    logger.info("Received tag_ids from query: %s", tag_ids_from_query)
+
+    # 如果列表為空，則設為 None
+    tag_ids = tag_ids_from_query if tag_ids_from_query else None
+    
+    service = ProfileService(db)
+    profiles = await service.search_freelancers(tag_ids=tag_ids)
+    
+    return profiles

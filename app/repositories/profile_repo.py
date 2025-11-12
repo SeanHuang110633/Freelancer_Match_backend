@@ -1,13 +1,13 @@
 # app/repositories/profile_repo.py
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 from app.models.freelancer_profile import FreelancerProfile
 from app.models.employer_profile import EmployerProfile
-from app.models.skill_tag import UserSkillTag
+from app.models.skill_tag import UserSkillTag, SkillTag
 from app.schemas.profile_schema import FreelancerProfileCreate, EmployerProfileCreate
 from app.schemas.profile_schema import FreelancerProfileUpdate, EmployerProfileUpdate
-from typing import List
+from typing import List, Optional
 import uuid
 from fastapi import HTTPException, status
 
@@ -139,4 +139,39 @@ class ProfileRepository:
         stmt = select(FreelancerProfile).where(FreelancerProfile.visibility == '公開')
         
         result = await self.db.execute(stmt)
+        return result.scalars().all()
+    
+    # (新增) 需求：雇主搜尋工作者
+    async def list_public_freelancers_by_skills(
+        self, tag_ids: Optional[List[str]] = None
+    ) -> List[FreelancerProfile]:
+        """
+        (核心功能) 依技能標籤搜尋「公開」的工作者
+        1. 僅限 '公開'
+        2. 技能 (tag_ids): 任一標籤符合 (OR 邏輯)
+        """
+        
+        # 基礎查詢 (SELECT * FROM freelancer_profiles)
+        # 必須 Eager Load 'skills' 及其 'tag' 以滿足 FreelancerProfileOut Schema
+        stmt = select(FreelancerProfile).options(
+            selectinload(FreelancerProfile.skills)
+            .joinedload(UserSkillTag.tag) # 使用 joinedload 避免 N+1
+        )
+        
+        # 1. 篩選 visibility
+        stmt = stmt.where(FreelancerProfile.visibility == '公開')
+
+        # 2. 處理技能標籤 (tag_ids)
+        if tag_ids:
+            # 我們需要 JOIN 關聯表 UserSkillTag
+            # 並篩選 tag_id 在我們傳入的列表中
+            stmt = stmt.join(
+                UserSkillTag, FreelancerProfile.profile_id == UserSkillTag.profile_id
+            ).where(
+                UserSkillTag.tag_id.in_(tag_ids)
+            )
+
+        # (重要) 使用 distinct() 確保如果一個工作者符合多個標籤，
+        # 他在列表中只出現一次。
+        result = await self.db.execute(stmt.distinct())
         return result.scalars().all()
