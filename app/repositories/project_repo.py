@@ -99,6 +99,18 @@ class ProjectRepository:
         以及提案人的資訊 (用於 ProjectWithProposalsOut Schema)
         """
         stmt = select(Project).where(Project.project_id == project_id).options(
+
+            # --- (新增的修正) ---
+            # 1. (FIX) 載入 ProjectOut 所需的 employer 及其 profile
+            joinedload(Project.employer).
+            selectinload(User.employer_profile),
+            
+            # 2. (FIX) 顯式載入 ProjectOut 所需的 skills 及其 tag
+            # 雖然 model 中有 lazy="selectin"，但在此處明確定義更為保險
+            selectinload(Project.skills).
+            joinedload(ProjectSkillTag.tag),
+            # --- (修正結束) ---
+
             # 1. 載入案件的提案列表 (project.proposals)
             selectinload(Project.proposals).options(
                 # 2. 針對「每一個」提案，載入提案人 (proposal.freelancer)

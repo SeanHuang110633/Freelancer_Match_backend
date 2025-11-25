@@ -1,20 +1,31 @@
 # app/core/config.py
-# 應用程式設定 (例如資料庫連線字串、JWT 秘鑰等)
 from pydantic_settings import BaseSettings
+from typing import Optional
 
 class Settings(BaseSettings):
     # 資料庫設定
     DATABASE_URL: str
+    # Redis URL
+    REDIS_URL: str
     # JWT 設定
     JWT_SECRET_KEY: str
-    # JWT 演算法
     JWT_ALGORITHM: str = "HS256"
-    # 存取令牌過期時間（分鐘）
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    
-    # 環境變數檔案 
+
+    # --- 檔案儲存設定 ---
+    FILE_STORAGE_MODE: str = "local"
+    GCS_BUCKET_NAME: Optional[str] = None
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
+
+    # [已刪除] BACKEND_CORS_ORIGINS 相關的所有程式碼都不留
+    # 我們改在 main.py 中手動處理，避免 Pydantic 因為格式錯誤而崩潰
+
     class Config:
         env_file = ".env"
+        env_file_encoding = 'utf-8'
+        # (關鍵) 告訴 Pydantic 忽略那些沒定義在 Model 裡的環境變數
+        # 這樣即使 Cloud Run 傳入了 BACKEND_CORS_ORIGINS，Pydantic 也不會因為型別錯誤而報錯
+        extra = "ignore"
 
 # 建立設定實例
 settings = Settings()

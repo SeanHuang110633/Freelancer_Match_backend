@@ -8,8 +8,6 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 
 # --- ( M7 狀態機重構 ) ---
-# (修改) 根據新需求，移除 '已簽訂', '驗收中'
-# (新增) '雇主請求修改', '工作者請求修改', '雇主請求終止', '工作者請求終止', '工作者要求驗收'
 ContractStatusEnum = Enum(
     '協商中', '進行中', 
     '雇主請求修改', '工作者請求修改', 
@@ -30,15 +28,15 @@ class Contract(Base):
     employer_id = Column(CHAR(36), ForeignKey("users.user_id", ondelete="RESTRICT"), nullable=False, index=True)
     freelancer_id = Column(CHAR(36), ForeignKey("users.user_id", ondelete="RESTRICT"), nullable=False, index=True)
     
-    # --- 合約內容 (保持不變) ---
+    # --- 合約內容 ---
     title = Column(String(255), nullable=False)
-    content = Column(TEXT, nullable=False) # (不變) 保持純文字編輯
+    content = Column(TEXT, nullable=False)
     amount = Column(DECIMAL(10, 2), nullable=False)
     start_date = Column(TIMESTAMP, nullable=False, server_default=func.now())
     end_date = Column(TIMESTAMP, nullable=False)
     
     # --- 狀態管理 ---
-    status = Column(ContractStatusEnum, default='協商中', nullable=False) # (修改) 使用新的 Enum
+    status = Column(ContractStatusEnum, default='協商中', nullable=False)
     version = Column(INT, default=1)
     
     created_at = Column(TIMESTAMP, server_default=func.now())
@@ -72,6 +70,19 @@ class Contract(Base):
         back_populates="contracts_as_freelancer"
     )
 
-    # (註解) 保持註解，因為我們未實作 M7.5 (交付物)
-    # deliverables = relationship(...)
-    # reviews = relationship(...)
+    # (新增) 1-to-Many 關聯到 Deliverable
+    deliverables = relationship(
+        "Deliverable",
+        back_populates="contract",
+        cascade="all, delete-orphan", # 刪除合約時，連同交付物記錄一起刪除
+        lazy="selectin" # 列表查詢時自動載入，避免 N+1
+    )
+
+    # (新增) 1-to-Many 關聯到 Review
+    # 一個合約最多會有 2 筆評價 (雙方互評)
+    reviews = relationship(
+        "Review",
+        back_populates="contract",
+        cascade="all, delete-orphan", # 刪除合約時評價一併刪除
+        lazy="selectin" # 列表查詢時自動載入
+    )

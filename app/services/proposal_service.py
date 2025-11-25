@@ -2,84 +2,65 @@
 
 from fastapi import HTTPException, status, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-from pathlib import Path
-import aiofiles
-import uuid
-import os
-from typing import List, Optional
+from typing import Optional
+import logging
+
+
+# (新增) 匯入儲存層工廠
+from app.core.storage import get_storage_provider
 
 from app.models.user import User, UserRoleEnum
 from app.models.proposal import Proposal
 from app.models.project import Project
 from app.repositories.proposal_repo import ProposalRepository
 from app.repositories.project_repo import ProjectRepository
-from app.schemas.proposal_schema import ProposalCreate, ProposalOutWithFullProject
+from app.schemas.proposal_schema import ProposalCreate
+from app.services.notification_service import NotificationService
 
-from app.services.notification_service import NotificationService # (M8.3 新增)
-
-
-# --- 檔案上傳設定 (保持不變) ---
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-UPLOAD_DIR = BASE_DIR / "static" / "uploads" / "proposals"
-UPLOAD_URL_PREFIX = "/static/uploads/proposals/"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-# --- 結束 ---
-
+logger = logging.getLogger(__name__)
 
 class ProposalService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.proposal_repo = ProposalRepository(db)
-        self.project_repo = ProjectRepository(db) 
-        self.notification_service = NotificationService(db) # (M8.3 新增)
+        self.project_repo = ProjectRepository(db)
+        self.notification_service = NotificationService(db)
+        
+        # (新增) 初始化儲存提供者
+        # 這會根據 config 自動決定是 LocalStorage 還是 GCPStorage
+        self.storage = get_storage_provider() 
 
-    # ... _save_upload_file (保持不變) ...
-    async def _save_upload_file(self, file: UploadFile) -> str:
-        if file.content_type != "application/pdf":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="附件僅支援 PDF 格式"
-            )
-        file_extension = ".pdf"
-        filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = UPLOAD_DIR / filename
-        try:
-            async with aiofiles.open(file_path, 'wb') as f:
-                content = await file.read()
-                await f.write(content)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"檔案儲存失敗: {str(e)}"
-            )
-        return f"{UPLOAD_URL_PREFIX}{filename}"
+    # (移除) _save_upload_file 與 _delete_file 函式已完全移除
+    # 相關邏輯已封裝至 app/core/storage/ 下的實作類別中
 
-    # --- ( M8.3 執行順序修正 ) ---
     async def create_proposal(
-        self, 
-        project_id: str, 
-        freelancer: User, 
-        proposal_data: ProposalCreate, 
+        self,
+        project_id: str,
+        freelancer: User,
+        proposal_data: ProposalCreate,
         attachment: Optional[UploadFile]
     ) -> Proposal:
         if freelancer.role != UserRoleEnum.freelancer:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有自由工作者可以提案")
-        
-        # 步驟 1: 驗證 (保持不變)
+
         project = await self.project_repo.get_project_by_id(project_id)
         if not project:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="案件不存在")
+        
         if project.status != "招募中":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="此案件目前未在招募中")
+
         existing = await self.proposal_repo.check_existing_proposal(project_id, freelancer.user_id)
         if existing:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="你已經對此案件提案")
-        
+
         attachment_url = None
         if attachment:
-            attachment_url = await self._save_upload_file(attachment)
+            # (重構) 使用 Storage Provider
+            # 這裡直接指定目錄名稱 'proposals'，實作細節由 storage layer 處理
+            # 回傳的會是完整的公開 URL 或相對路徑
+            attachment_url = await self.storage.save_file(attachment, directory="proposals")
 
-        # 步驟 2: (修正) 僅在記憶體中建立物件
         new_proposal = Proposal(
             project_id=project_id,
             freelancer_id=freelancer.user_id,
@@ -88,116 +69,82 @@ class ProposalService:
             status="已提交"
         )
 
-        # 步驟 3: (修正) 先呼叫通知 (將 Notification 加入 Session)
         await self.notification_service.create_notification(
-            user_id=project.employer_id, # 接收方：雇主
+            user_id=project.employer_id,
             title=f"案件「{project.title}」收到新提案",
-            message=f"來自 {freelancer.email} 的提案。", # (修正) 避免暴露敏感資訊，或使用 freelancer.full_name
-            link_url=f"/projects/{project.project_id}/proposals" # 前端提案管理頁
+            message=f"來自 {freelancer.email} 的提案。",
+            link_url=f"/projects/{project.project_id}/proposals"
         )
-        
-        # 步驟 4: (修正) 最後才呼叫 Repo 儲存
-        # (這會將 Proposal 和 Notification 一起提交)
-        created_proposal = await self.proposal_repo.create_proposal(new_proposal)
-        
-        return created_proposal
-    # --- ( M8.3 修正結束 ) ---
 
-    # ... delete_proposal (保持不變) ...
+        created_proposal = await self.proposal_repo.create_proposal(new_proposal)
+        return created_proposal
+
     async def delete_proposal(self, proposal_id: str, current_user: User) -> None:
-        """
-        (工作者) 撤回提案 (Use Case 6.2)
-        """
         proposal = await self.proposal_repo.get_proposal_by_id(proposal_id)
         if not proposal:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
 
-        # 權限檢查：是否為提案人本人
         if proposal.freelancer_id != current_user.user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限刪除此提案")
-        
-        # (修改) 允許 '雇主已撤銷案件' 狀態的提案被刪除 (清理)
-        # 業務規則：只有 '已提交' 狀態的提案可以撤回
+
         if proposal.status not in ["已提交", "雇主已撤銷案件"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="提案已被處理，無法撤回")
-        
-        # (可選) 刪除實體檔案
+
+        # (重構) 使用 Storage Provider 刪除檔案
         if proposal.attachment_url:
-            # (修正) 修正 base_dir 路徑
-            # BASE_DIR = Path(__file__).resolve().parent.parent.parent
-            file_path = BASE_DIR / proposal.attachment_url.lstrip('/')
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    print(f"Failed to delete file {file_path}: {e}") # log warning
+            await self.storage.delete_file(proposal.attachment_url)
 
         await self.proposal_repo.delete_proposal(proposal)
         return
 
-    # (新增) 需求三：獲取提案詳情
-    async def get_proposal_details(
-        self, proposal_id: str, user: User
-    ) -> Proposal:
-        """
-        (工作者) 獲取單一提案詳情 (三欄式佈局用)
-        """
-        # 1. 呼叫 Repo 獲取巢狀資料
-        proposal = await self.proposal_repo.get_proposal_by_id_with_details(proposal_id)
-        if not proposal:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
-
-        # 2. 權限檢查 (必須是提案人)
-        if proposal.freelancer_id != user.user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限檢視此提案")
-            
-        return proposal
-
-    # (新增) 需求三：更新提案
     async def update_proposal(
-        self, 
-        proposal_id: str, 
-        user: User, 
-        brief_description: str, 
+        self,
+        proposal_id: str,
+        user: User,
+        brief_description: str,
         attachment: Optional[UploadFile]
     ) -> Proposal:
-        """
-        (工作者) 更新「已提交」的提案
-        """
-        # 1. 獲取並檢查權限和狀態
         proposal = await self.proposal_repo.get_proposal_by_id(proposal_id)
         if not proposal:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
+
         if proposal.freelancer_id != user.user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限修改此提案")
+
         if proposal.status != "已提交":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="提案已被處理，無法修改")
 
-        # 2. 更新文字欄位
         proposal.brief_description = brief_description
 
-        # 3. 處理檔案
         if attachment:
-            # 3a. 儲存新檔案
-            new_attachment_url = await self._save_upload_file(attachment)
+            # 1. (重構) 上傳新檔案
+            new_attachment_url = await self.storage.save_file(attachment, directory="proposals")
             
-            # 3b. 刪除舊檔案
+            # 2. (重構) 刪除舊檔案
             if proposal.attachment_url:
-                old_file_path = BASE_DIR / proposal.attachment_url.lstrip('/')
-                if os.path.exists(old_file_path):
-                    try:
-                        os.remove(old_file_path)
-                    except Exception as e:
-                        print(f"Failed to delete old file {old_file_path}: {e}") # log warning
+                # 不論舊檔案是在 Local 還是 GCS，StorageProvider 會根據 URL 前綴判斷是否能刪除
+                # 或是我們假設切換環境後，舊環境的檔案可能無法透過新 Provider 刪除
+                # 但基於介面設計，我們直接呼叫 delete_file 即可，失敗通常會被 log 下來但不中斷
+                await self.storage.delete_file(proposal.attachment_url)
             
-            # 3c. 更新 DB 欄位
+            # 3. 更新 DB
             proposal.attachment_url = new_attachment_url
 
-        # 4. 提交
         return await self.proposal_repo.update_proposal(proposal)
 
-    # ... get_project_with_proposals (保持不變) ...
+    # ... (其餘 read-only 方法如 get_proposal_details, get_project_with_proposals, update_proposal_status 保持不變) ...
+    
+    async def get_proposal_details(self, proposal_id: str, user: User) -> Proposal:
+        # (保持不變)
+        proposal = await self.proposal_repo.get_proposal_by_id_with_details(proposal_id)
+        if not proposal:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
+        if proposal.freelancer_id != user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限檢視此提案")
+        return proposal
+
     async def get_project_with_proposals(self, project_id: str, employer: User) -> Project:
+        # (保持不變)
         project = await self.project_repo.get_project_by_id_with_proposals(project_id)
         if not project:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="案件不存在")
@@ -205,48 +152,32 @@ class ProposalService:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限檢視此案件的提案")
         return project
 
-    # --- ( M7 邏輯修正 ) ---
     async def update_proposal_status(self, proposal_id: str, new_status: str, employer: User) -> Proposal:
-        """
-        (雇主) 選擇或拒絕人選 (Use Case 6.3, 6.5)
-        """
+        # (保持不變)
         if new_status not in ["已接受", "已拒絕"]:
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="無效的狀態")
 
         proposal = await self.proposal_repo.get_proposal_by_id_with_project(proposal_id)
-        
         if not proposal:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提案不存在")
-
         if proposal.project.employer_id != employer.user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你沒有權限修改此提案")
-            
         if proposal.status != "已提交":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="此提案已被處理")
 
-        # 步驟 1: 更新物件狀態 (記憶體中)
         proposal.status = new_status
         
+        # (通知邏輯保持不變)
         if new_status == "已接受":
-            # --- ( M7 邏輯修正 ) ---
-            # 根據 M7 新邏輯， '已成案' 狀態應在 M7 (合約 '進行中') 才設定
-            # proposal.project.status = "已成案" # <-- (移除此行)
-            # --- ( M7 修正結束 ) ---
-            
-            # 步驟 2: 呼叫通知 (加入 Session)
             await self.notification_service.create_notification(
-                user_id=proposal.freelancer_id, # 接收方：工作者
+                user_id=proposal.freelancer_id,
                 title=f"恭喜！您的提案「{proposal.project.title}」已被接受",
-                link_url=f"/my-contracts" # 提醒他去查看即將產生的合約
+                link_url=f"/my-contracts"
             )
-            
         elif new_status == "已拒絕":
-             # 步驟 2: 呼叫通知 (加入 Session)
              await self.notification_service.create_notification(
-                user_id=proposal.freelancer_id, # 接收方：工作者
+                user_id=proposal.freelancer_id,
                 title=f"遺憾，您的提案「{proposal.project.title}」未被接受",
-                link_url=f"/find-jobs" # 導向回案件列表
+                link_url=f"/find-jobs"
             )
-             
-        # 步驟 3: 最後儲存 (提交所有變更)
         return await self.proposal_repo.update_proposal(proposal)
