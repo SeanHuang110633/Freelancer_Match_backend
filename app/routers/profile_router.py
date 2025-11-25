@@ -1,5 +1,5 @@
 # app/routers/profile_router.py
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -63,6 +63,28 @@ async def update_my_profile(
     updated_profile = await service.update_my_profile(current_user, update_data)
     profile = await service.get_my_profile(current_user)
     return profile
+
+# --- 上傳頭貼的 Endpoint ---
+@router.post(
+    "/avatar",
+    response_model=dict,
+    summary="上傳頭貼/Logo",
+    description="上傳圖片並取得 URL，供後續建立或更新 Profile 使用。"
+)
+async def upload_avatar_image(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    # 雖然上傳本身不依賴 user 資料，但我們保留 user 檢查確保已登入
+    current_user: User = Depends(get_current_user) 
+):
+    """
+    Input: multipart/form-data (file)
+    Output: { "url": "http://..." }
+    """
+    service = ProfileService(db)
+    url = await service.upload_avatar(file)
+    return {"url": url}
+
 
 @router.put("/freelancer/skills", response_model=List[UserSkillTagOut])
 async def update_freelancer_skills(

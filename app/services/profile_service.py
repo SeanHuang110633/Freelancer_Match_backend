@@ -1,7 +1,7 @@
 # app/services/profile_service.py
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import HTTPException, status
+from fastapi import HTTPException, UploadFile, status
 from typing import Union, List, Optional
 
 from app.models.employer_profile import EmployerProfile
@@ -13,6 +13,8 @@ from app.schemas.profile_schema import (
     FreelancerProfileCreate, EmployerProfileCreate, UserSkillsUpdate,
     FreelancerProfileUpdate, EmployerProfileUpdate
 )
+
+from app.core.storage import get_storage_provider
 
 class ProfileService:
     def __init__(self, db: AsyncSession):
@@ -54,6 +56,36 @@ class ProfileService:
 
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "角色與 Profile 類型不符")
 
+    # --- (新增) 頭貼上傳邏輯 ---
+    async def upload_avatar(self, file: UploadFile) -> str:
+        """
+        上傳頭貼或公司 Logo
+        1. 驗證檔案類型 (僅限圖片)
+        2. 呼叫 StorageProvider 儲存
+        3. 回傳公開 URL
+        """
+        # 1. 驗證檔案類型
+        allowed_types = ["image/jpeg", "image/png", "image/webp", "image/jpg"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="僅支援圖片格式 (JPEG, PNG, WEBP)"
+            )
+
+        # 2. 取得儲存實例 (Local 或 GCS 由設定檔決定)
+        storage_provider = get_storage_provider()
+
+        # 3. 執行儲存 (指定目錄為 'avatar')
+        try:
+            # 注意：這裡假設 save_file 會回傳完整的 URL (視 storage 實作而定)
+            file_url = await storage_provider.save_file(file, directory="avatar")
+            return file_url
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"圖片上傳失敗: {str(e)}"
+            )
+    
     async def update_my_skills(self, user: User, skills_data: UserSkillsUpdate):
         """(僅限工作者) 更新技能標籤"""
         if user.role != "自由工作者":
