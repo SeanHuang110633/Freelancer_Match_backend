@@ -3,9 +3,9 @@ name: Deploy Backend to Cloud Run
 on:
   push:
     branches:
-      - main  # 當推送到 main 分支時觸發
+      - main # 當推送到 main 分支時觸發
     paths:
-      - '**'  # 監聽所有檔案變更
+      - "**" # 監聽所有檔案變更
 
 env:
   # --- 基本設定 (根據您的 Artifact Registry 截圖) ---
@@ -52,9 +52,7 @@ jobs:
             --region ${{ env.REGION }} \
             --platform managed \
             --allow-unauthenticated \
-            --port 8000 \
             --service-account freelancer-match@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com \
-            --set-env-vars "PORT=8000" \
             --set-env-vars "FILE_STORAGE_MODE=gcs" \
             --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
             --set-env-vars "REDIS_URL=${{ secrets.REDIS_URL }}" \
