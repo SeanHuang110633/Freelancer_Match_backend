@@ -3,48 +3,88 @@ name: Deploy Backend to Cloud Run
 on:
   push:
     branches:
-      - main # 當推送到 main 分支時觸發
+      - main
     paths:
-      - "**" # 監聽所有檔案變更
+      - "**"
 
 env:
-  # --- 基本設定 (根據您的 Artifact Registry 截圖) ---
   REGION: asia-east1
   REPO_NAME: freelancer-repo
   SERVICE_NAME: freelancer-backend
-  # 完整的 Artifact Registry Image 路徑
   IMAGE_URL: asia-east1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/freelancer-repo/freelancer-backend
 
 jobs:
+  # ======================================================
+  # 1. [新增] 測試工作 (Unit Test Job)
+  #    這會先執行，若失敗則整個 Pipeline 停止
+  # ======================================================
+  unit-test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # [新增] 設定 Python 環境 (建議與你本地開發版本一致，如 3.12)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip" # 啟用快取以加速安裝
+
+      # [新增] 安裝依賴 (包含測試套件)
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # [新增] 動態建立 pytest.ini (模擬環境變數，隔離真實服務)
+      - name: Create pytest.ini for Testing
+        run: |
+          echo "[pytest]" > pytest.ini
+          echo "asyncio_mode = auto" >> pytest.ini
+          echo "pythonpath = ." >> pytest.ini # 確保能找到 app 模組
+          echo "env =" >> pytest.ini
+          echo "    DATABASE_URL=sqlite+aiosqlite:///:memory:" >> pytest.ini
+          echo "    REDIS_URL=redis://mock" >> pytest.ini
+          echo "    FILE_STORAGE_MODE=local" >> pytest.ini
+          echo "    JWT_SECRET_KEY=ci_test_key" >> pytest.ini
+
+      # [新增] 執行單元測試
+      - name: Execute Pytest
+        run: |
+          pytest -v tests/unit/
+
+  # ======================================================
+  # 2. [修改] 部署工作 (Deploy Job)
+  # ======================================================
   deploy:
+    name: Build and Deploy
+    # [修改] 關鍵：加入 needs，只有 unit-test 成功才會執行此工作
+    needs: unit-test
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 認證 GCP (使用 Secrets 中的 JSON Key)
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
 
-      # 2. 設定 gcloud 環境
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      # 3. 設定 Docker Auth (讓 Docker 能推送到 Artifact Registry)
       - name: Configure Docker for Artifact Registry
         run: |
           gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
-      # 4. 打包並上傳 Docker Image
       - name: Build and Push Container
         run: |
           docker build -t ${{ env.IMAGE_URL }}:latest .
           docker push ${{ env.IMAGE_URL }}:latest
 
-      # 5. 部署到 Cloud Run
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
