@@ -10,3 +10,12 @@ static/uploads/
 static/avatar/
 # 非常重要：絕對不要把金鑰打包進 Image，我們會用掛載的方式
 gcp-key.json
+
+
+# 忽略 pytest 快取
+.pytest_cache
+htmlcov
+
+README.md
+.coverage
+coverage.xml
