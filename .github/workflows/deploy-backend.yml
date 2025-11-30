@@ -102,11 +102,16 @@ jobs:
             sleep 1
           done
 
-      # 執行 Alembic 遷移 (建立真實表格結構)
+      # 執行資料庫遷移 (建立真實表格結構)
       - name: Run Database Migrations
+        working-directory: ./freelancer_match_backend
         env:
-          # 指向 CI 的 Service Container
+          # 指向 CI 的 Service Container (localhost:3306)
           DATABASE_URL: "mysql+aiomysql://root:root@127.0.0.1:3306/freelancer_test_db"
+          # [新增] 補上 Pydantic 驗證所需的變數 (數值隨意，能通過驗證即可)
+          REDIS_URL: "redis://127.0.0.1:6379"
+          JWT_SECRET_KEY: "ci_migration_dummy_key"
+          FILE_STORAGE_MODE: "local" # 建議也補上這個，避免如果有預設值檢查
         run: |
           alembic upgrade head
 
