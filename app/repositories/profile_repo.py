@@ -93,40 +93,58 @@ class ProfileRepository:
         return profile
 
     # (重要) 修正 update_user_skills
-    async def update_user_skills(self, profile_id: str, tag_ids: List[str]) -> List[UserSkillTag]: # <-- (Fix 1) 修正回傳型別提示
+    async def update_user_skills(self, profile_id: str, tag_ids: List[str]) -> List[UserSkillTag]:
         
-        profile = await self.db.get(
-            FreelancerProfile, 
-            profile_id, 
-            options=[selectinload(FreelancerProfile.skills)]
-        )
+        # 1. 獲取 Profile (這裡不需要 eager load skills，因為我們馬上要清空它)
+        profile = await self.db.get(FreelancerProfile, profile_id)
         if not profile:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Profile not found")
             
-        profile.skills.clear()
+        # 2. 為了清空舊技能，我們需要先確保 skills 集合被載入
+        # 使用 selectinload 確保 skills 在記憶體中
+        # (雖然這看起來有點多餘，但為了安全操作集合是必要的)
+        stmt = select(FreelancerProfile).where(FreelancerProfile.profile_id == profile_id).options(selectinload(FreelancerProfile.skills))
+        result = await self.db.execute(stmt)
+        loaded_profile = result.scalars().first()
         
-        await self.db.flush() # 確保 DELETE 執行
-
-        new_skill_links = []
+        # 清空舊關聯
+        loaded_profile.skills.clear()
+        
+        # 3. 建立新關聯
         for tag_id in tag_ids:
             new_link = UserSkillTag(
                 user_skill_tag_id=str(uuid.uuid4()),
                 profile_id=profile_id,
                 tag_id=tag_id
             )
-            new_skill_links.append(new_link)
+            # 直接加到 skills 集合中，讓 ORM 幫我們處理 INSERT
+            loaded_profile.skills.append(new_link)
             
-        self.db.add_all(new_skill_links)
+        # 4. 提交
+        await self.db.commit()
         
-        await self.db.commit() # 確保 INSERT 執行
+        # 5. (關鍵修正) 為了回傳正確資料，我們不再依賴 expire/refresh
+        # 而是"手動"重新查詢一次完整的物件
+        # 使用一個全新的查詢，確保拿到的是 DB 最新狀態
+        # 這裡我們直接呼叫既有的 get_freelancer_profile_by_user_id 方法
+        # 它內部有正確的 selectinload 邏輯
         
-        # 重新獲取完整的 Profile 物件
-        updated_profile = await self.get_freelancer_profile_by_user_id(profile.user_id)
+        # 注意：我們需要確保這個查詢不會用到 Session 裡的舊快取
+        # 雖然我們沒用 expire，但因為我們是在同一個 transaction 裡做了修改
+        # 透過直接查詢，通常能拿到最新狀態。
+        # 為了保險，我們可以使用 populate_existing() 強制覆蓋
         
-        if updated_profile is None:
+        final_stmt = select(FreelancerProfile).where(FreelancerProfile.user_id == loaded_profile.user_id).options(
+            selectinload(FreelancerProfile.skills).selectinload(UserSkillTag.tag)
+        ).execution_options(populate_existing=True) # <--- 強制更新 Session 中的物件
+        
+        final_result = await self.db.execute(final_stmt)
+        final_profile = final_result.scalars().first()
+
+        if final_profile is None:
              raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to re-fetch profile")
 
-        return updated_profile.skills # <-- (Fix 2) 回傳技能列表，而不是 Profile 物件
+        return final_profile.skills
     
     async def list_public_freelancer_profiles_with_skills(self) -> List[FreelancerProfile]:
         """

@@ -15,8 +15,7 @@ env:
 
 jobs:
   # ======================================================
-  # 1. [新增] 測試工作 (Unit Test Job)
-  #    這會先執行，若失敗則整個 Pipeline 停止
+  # 1. 單元測試 (Unit Test) - 快速篩選邏輯錯誤
   # ======================================================
   unit-test:
     name: Run Unit Tests
@@ -25,43 +24,111 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # [新增] 設定 Python 環境 (建議與你本地開發版本一致，如 3.12)
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip" # 啟用快取以加速安裝
+          cache: "pip"
 
-      # [新增] 安裝依賴 (包含測試套件)
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # [新增] 動態建立 pytest.ini (模擬環境變數，隔離真實服務)
-      - name: Create pytest.ini for Testing
+      # 動態建立單元測試專用的設定 (Mock DB)
+      - name: Create pytest.ini for Unit Testing
         run: |
           echo "[pytest]" > pytest.ini
           echo "asyncio_mode = auto" >> pytest.ini
-          echo "pythonpath = ." >> pytest.ini # 確保能找到 app 模組
+          echo "pythonpath = ." >> pytest.ini
           echo "env =" >> pytest.ini
           echo "    DATABASE_URL=sqlite+aiosqlite:///:memory:" >> pytest.ini
           echo "    REDIS_URL=redis://mock" >> pytest.ini
           echo "    FILE_STORAGE_MODE=local" >> pytest.ini
           echo "    JWT_SECRET_KEY=ci_test_key" >> pytest.ini
 
-      # [新增] 執行單元測試
-      - name: Execute Pytest
+      - name: Execute Unit Tests
         run: |
           pytest -v tests/unit/
 
   # ======================================================
-  # 2. [修改] 部署工作 (Deploy Job)
+  # 2. [新增] 整合測試 (Integration Test) - 驗證真實環境
+  # ======================================================
+  integration-test:
+    name: Run Integration Tests
+    needs: unit-test # 必須等單元測試通過才跑
+    runs-on: ubuntu-latest
+
+    # 啟動真實的 Service Containers
+    services:
+      db_test:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: freelancer_test_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+      redis_test:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 等待資料庫完全啟動 (避免 Flaky Tests)
+      - name: Wait for Database Ready
+        run: |
+          until mysqladmin ping -h 127.0.0.1 -P 3306 --silent; do
+            echo 'waiting for mysql...'
+            sleep 1
+          done
+
+      # 執行 Alembic 遷移 (建立真實表格結構)
+      - name: Run Database Migrations
+        env:
+          # 指向 CI 的 Service Container
+          DATABASE_URL: "mysql+aiomysql://root:root@127.0.0.1:3306/freelancer_test_db"
+        run: |
+          alembic upgrade head
+
+      # 執行整合測試 (我們的 pytest.ini 不需要動，因為 conftest.py 會處理)
+      # 但為了保險，我們透過環境變數再次確認
+      - name: Execute Integration Tests
+        env:
+          DATABASE_URL: "mysql+aiomysql://root:root@127.0.0.1:3306/freelancer_test_db"
+          REDIS_URL: "redis://127.0.0.1:6379"
+          JWT_SECRET_KEY: "ci_integration_key"
+          FILE_STORAGE_MODE: "local"
+        run: |
+          # 只執行 tests/integration 下的測試
+          pytest -v tests/integration/
+
+  # ======================================================
+  # 3. 部署工作 (Deploy Job)
   # ======================================================
   deploy:
     name: Build and Deploy
-    # [修改] 關鍵：加入 needs，只有 unit-test 成功才會執行此工作
-    needs: unit-test
+    # [修改] 必須等整合測試通過才部署
+    needs: integration-test
     runs-on: ubuntu-latest
 
     steps:

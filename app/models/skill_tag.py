@@ -1,11 +1,12 @@
 # app/models/skill_tag.py
+import uuid # <--- (新增)
 from sqlalchemy import Column, String, Boolean, ForeignKey, INT, CHAR
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
 class SkillTag(Base):
     __tablename__ = "skill_tags"
-    tag_id = Column(CHAR(36), primary_key=True)
+    tag_id = Column(CHAR(36), primary_key=True, default=lambda: str(uuid.uuid4())) # <--- (修改)
     name = Column(String(100), unique=True, nullable=False)
     category = Column(String(100))
     is_managed = Column(Boolean, default=True)

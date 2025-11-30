@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from app.models.user import User, UserRoleEnum
+from app.core.config import settings
 
 
 # --- 匯入所有 Models 以解決 SQLAlchemy Registry 問題 ---
@@ -100,3 +101,14 @@ def mock_redis_client(mocker):
     """
     mock_redis = mocker.patch("redis.asyncio.from_url", new_callable=AsyncMock)
     return mock_redis
+
+@pytest.fixture(scope="session", autouse=True)
+def set_unit_test_env():
+    """
+    (新增) 強制設定單元測試專用的環境變數
+    取代原本 pytest.ini 的功能
+    """
+    settings.DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+    settings.REDIS_URL = "redis://mock-redis-host:6379/0"
+    settings.FILE_STORAGE_MODE = "local"
+    settings.JWT_SECRET_KEY = "test_secret_key_for_unit_tests"
