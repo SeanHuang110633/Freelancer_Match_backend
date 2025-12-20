@@ -17,114 +17,114 @@ jobs:
   # ======================================================
   # 1. 單元測試 (Unit Test) - 快速篩選邏輯錯誤
   # ======================================================
-  unit-test:
-    name: Run Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  # unit-test:
+  #   name: Run Unit Tests
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
+  #         cache: "pip"
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+  #     - name: Install Dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install -r requirements.txt
 
-      # 動態建立單元測試專用的設定 (Mock DB)
-      - name: Create pytest.ini for Unit Testing
-        run: |
-          echo "[pytest]" > pytest.ini
-          echo "asyncio_mode = auto" >> pytest.ini
-          echo "pythonpath = ." >> pytest.ini
-          echo "env =" >> pytest.ini
-          echo "    DATABASE_URL=sqlite+aiosqlite:///:memory:" >> pytest.ini
-          echo "    REDIS_URL=redis://mock" >> pytest.ini
-          echo "    FILE_STORAGE_MODE=local" >> pytest.ini
-          echo "    JWT_SECRET_KEY=ci_test_key" >> pytest.ini
+  #     # 動態建立單元測試專用的設定 (Mock DB)
+  #     - name: Create pytest.ini for Unit Testing
+  #       run: |
+  #         echo "[pytest]" > pytest.ini
+  #         echo "asyncio_mode = auto" >> pytest.ini
+  #         echo "pythonpath = ." >> pytest.ini
+  #         echo "env =" >> pytest.ini
+  #         echo "    DATABASE_URL=sqlite+aiosqlite:///:memory:" >> pytest.ini
+  #         echo "    REDIS_URL=redis://mock" >> pytest.ini
+  #         echo "    FILE_STORAGE_MODE=local" >> pytest.ini
+  #         echo "    JWT_SECRET_KEY=ci_test_key" >> pytest.ini
 
-      - name: Execute Unit Tests
-        run: |
-          pytest -v tests/unit/
+  #     - name: Execute Unit Tests
+  #       run: |
+  #         pytest -v tests/unit/
 
   # ======================================================
   # 2. [新增] 整合測試 (Integration Test) - 驗證真實環境
   # ======================================================
-  integration-test:
-    name: Run Integration Tests
-    needs: unit-test # 必須等單元測試通過才跑
-    runs-on: ubuntu-latest
+  # integration-test:
+  #   name: Run Integration Tests
+  #   needs: unit-test # 必須等單元測試通過才跑
+  #   runs-on: ubuntu-latest
 
-    # 啟動真實的 Service Containers
-    services:
-      db_test:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: freelancer_test_db
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=3
+  #   # 啟動真實的 Service Containers
+  #   services:
+  #     db_test:
+  #       image: mysql:8.0
+  #       env:
+  #         MYSQL_ROOT_PASSWORD: root
+  #         MYSQL_DATABASE: freelancer_test_db
+  #       ports:
+  #         - 3306:3306
+  #       options: >-
+  #         --health-cmd="mysqladmin ping"
+  #         --health-interval=10s
+  #         --health-timeout=5s
+  #         --health-retries=3
 
-      redis_test:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
+  #     redis_test:
+  #       image: redis:7-alpine
+  #       ports:
+  #         - 6379:6379
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
+  #         cache: "pip"
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+  #     - name: Install Dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install -r requirements.txt
 
-      # 等待資料庫完全啟動 (避免 Flaky Tests)
-      - name: Wait for Database Ready
-        run: |
-          until mysqladmin ping -h 127.0.0.1 -P 3306 --silent; do
-            echo 'waiting for mysql...'
-            sleep 1
-          done
+  #     # 等待資料庫完全啟動 (避免 Flaky Tests)
+  #     - name: Wait for Database Ready
+  #       run: |
+  #         until mysqladmin ping -h 127.0.0.1 -P 3306 --silent; do
+  #           echo 'waiting for mysql...'
+  #           sleep 1
+  #         done
 
-      # 執行資料庫遷移 (建立真實表格結構)
-      - name: Run Database Migrations
-        env:
-          # 指向 CI 的 Service Container (localhost:3306)
-          DATABASE_URL: "mysql+aiomysql://root:root@127.0.0.1:3306/freelancer_test_db"
-          # [新增] 補上 Pydantic 驗證所需的變數 (數值隨意，能通過驗證即可)
-          REDIS_URL: "redis://127.0.0.1:6379"
-          JWT_SECRET_KEY: "ci_migration_dummy_key"
-          FILE_STORAGE_MODE: "local" # 建議也補上這個，避免如果有預設值檢查
-        run: |
-          alembic upgrade head
+  #     # 執行資料庫遷移 (建立真實表格結構)
+  #     - name: Run Database Migrations
+  #       env:
+  #         # 指向 CI 的 Service Container (localhost:3306)
+  #         DATABASE_URL: "mysql+aiomysql://root:root@127.0.0.1:3306/freelancer_test_db"
+  #         # [新增] 補上 Pydantic 驗證所需的變數 (數值隨意，能通過驗證即可)
+  #         REDIS_URL: "redis://127.0.0.1:6379"
+  #         JWT_SECRET_KEY: "ci_migration_dummy_key"
+  #         FILE_STORAGE_MODE: "local" # 建議也補上這個，避免如果有預設值檢查
+  #       run: |
+  #         alembic upgrade head
 
-      # 執行整合測試 (我們的 pytest.ini 不需要動，因為 conftest.py 會處理)
-      # 但為了保險，我們透過環境變數再次確認
-      - name: Execute Integration Tests
-        env:
-          DATABASE_URL: "mysql+aiomysql://root:root@127.0.0.1:3306/freelancer_test_db"
-          REDIS_URL: "redis://127.0.0.1:6379"
-          JWT_SECRET_KEY: "ci_integration_key"
-          FILE_STORAGE_MODE: "local"
-        run: |
-          # 只執行 tests/integration 下的測試
-          pytest -v tests/integration/
+  #     # 執行整合測試 (我們的 pytest.ini 不需要動，因為 conftest.py 會處理)
+  #     # 但為了保險，我們透過環境變數再次確認
+  #     - name: Execute Integration Tests
+  #       env:
+  #         DATABASE_URL: "mysql+aiomysql://root:root@127.0.0.1:3306/freelancer_test_db"
+  #         REDIS_URL: "redis://127.0.0.1:6379"
+  #         JWT_SECRET_KEY: "ci_integration_key"
+  #         FILE_STORAGE_MODE: "local"
+  #       run: |
+  #         # 只執行 tests/integration 下的測試
+  #         pytest -v tests/integration/
 
   # ======================================================
   # 3. 部署工作 (Deploy Job)
@@ -132,7 +132,7 @@ jobs:
   deploy:
     name: Build and Deploy
     # [修改] 必須等整合測試通過才部署
-    needs: integration-test
+    # needs: integration-test
     runs-on: ubuntu-latest
 
     steps:

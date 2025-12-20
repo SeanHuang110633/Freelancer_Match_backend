@@ -19,3 +19,6 @@ htmlcov
 README.md
 .coverage
 coverage.xml
+
+
+backup_*.sql

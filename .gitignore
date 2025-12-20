@@ -14,3 +14,14 @@ htmlcov/
 coverage.xml
 *.pyc
 __pycache__/
+
+backup_*.sql
+scripts/
+docs/
+.idea/
+.vscode/
+.coverage
+.coveragerc
+
+
+*.sql
