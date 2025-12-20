@@ -11,7 +11,8 @@ from app.repositories.profile_repo import ProfileRepository
 from app.repositories.review_repo import ReviewRepository
 from app.schemas.profile_schema import (
     FreelancerProfileCreate, EmployerProfileCreate, UserSkillsUpdate,
-    FreelancerProfileUpdate, EmployerProfileUpdate
+    FreelancerProfileUpdate, EmployerProfileUpdate,
+    FreelancerProfileOut, EmployerProfileOut # (新增)
 )
 
 from app.core.storage import get_storage_provider
@@ -139,50 +140,68 @@ class ProfileService:
 
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "角色與 Profile 類型不符")
 
-    async def get_freelancer_profile(self, user_id: str) -> FreelancerProfile:
+    async def get_freelancer_profile(self, user_id: str) -> FreelancerProfileOut:
         """
         獲取指定 ID 的工作者 Profile (公開用，含詳細評分)
         """
-        profile = await self.repo.get_freelancer_profile_by_user_id(user_id)
+        # (修改) 改用 View 方法 (會回傳 Pydantic Model)
+        profile = await self.repo.get_freelancer_profile_view(user_id)
         if not profile:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "工作者 Profile 不存在")
 
+        # 2. 注入評分 (review_repo 仍會查詢 DB)
         ratings = await self.review_repo.get_freelancer_detailed_ratings(user_id)
+        
+        # 3. Pydantic Model 也可以使用 setattr 更新欄位 (記憶體中)
         for key, value in ratings.items():
             setattr(profile, key, value)
 
         return profile
 
     # (新增) 獲取雇主公開 Profile
-    async def get_employer_profile_public(self, user_id: str) -> EmployerProfile:
+    async def get_employer_profile_public(self, user_id: str) -> EmployerProfileOut:
         """
         獲取指定 ID 的雇主 Profile (公開用，含詳細評分)
         """
-        # 1. 獲取基本資料
-        profile = await self.repo.get_employer_profile_by_user_id(user_id)
+        # 1. 獲取基本資料 (Cached)
+        profile = await self.repo.get_employer_profile_view(user_id)
         if not profile:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "雇主 Profile 不存在")
 
         # 2. 計算並注入詳細評分
         ratings = await self.review_repo.get_employer_detailed_ratings(user_id)
         
-        # 3. 將評分數據塞入 ORM 物件，供 Pydantic Schema 讀取
+        # 3. 將評分數據塞入 Pydantic 物件
         for key, value in ratings.items():
             setattr(profile, key, value)
 
         return profile
 
+    # (修改) 搜尋公開的工作者 (分頁版)
     async def search_freelancers(
-        self, tag_ids: Optional[List[str]] = None
-    ) -> List[FreelancerProfile]:
+        self, 
+        tag_ids: Optional[List[str]] = None,
+        limit: int = 20,
+        offset: int = 0
+    ) -> dict: # 回傳 dict { items, total }
         """
-        搜尋公開的工作者 (含詳細評分)
+        搜尋公開的工作者 (含詳細評分，分頁)
         """
-        profiles = await self.repo.list_public_freelancers_by_skills(tag_ids=tag_ids)
+        # 1. 獲取分頁資料
+        profiles = await self.repo.list_public_freelancers_by_skills(
+            tag_ids=tag_ids, limit=limit, offset=offset
+        )
         
+        # 2. 獲取總數
+        total = await self.repo.count_public_freelancers_by_skills(tag_ids=tag_ids)
+        
+        results = []
         for profile in profiles:
+            # 確保它是 Pydantic Model (Repo 已經保證了)
+            # 注入評分
             ratings = await self.review_repo.get_freelancer_detailed_ratings(profile.user_id)
             for key, value in ratings.items():
                 setattr(profile, key, value)
-                
-        return profiles
+            results.append(profile)
+            
+        return {"items": results, "total": total}

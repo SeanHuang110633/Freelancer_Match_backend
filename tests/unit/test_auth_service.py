@@ -118,7 +118,7 @@ async def test_register_user_fail_duplicate_email(mock_db_session, mock_user_fre
         await service.register_user(user_data)
     
     assert exc.value.status_code == 400
-    assert "已經被註冊" in exc.value.detail
+    assert "This email is already registered." in exc.value.detail
 
 # ==========================================
 # Part 3: Token 簽發 (Token Generation)

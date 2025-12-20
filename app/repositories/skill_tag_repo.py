@@ -3,12 +3,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
 from app.models.skill_tag import SkillTag
+from app.schemas.skill_tag_schema import SkillTagOut
 from typing import List
+from pydantic import TypeAdapter # (新增快取功能)
+from app.core.cache import cached # (新增快取功能)
 
 class SkillTagRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    # 套用快取：Key 前綴 "tags:all"，過期時間 1 天 (86400秒)
+    # 回傳型別：List[SkillTagOut]
+    @cached(key_prefix="tags:all", expire=86400, model=TypeAdapter(List[SkillTagOut]))
     async def list_all_tags(self) -> List[SkillTag]:
         """列出所有系統管理的技能標籤"""
         stmt = select(SkillTag).where(SkillTag.is_managed == True)

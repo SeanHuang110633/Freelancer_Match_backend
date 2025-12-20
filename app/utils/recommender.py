@@ -7,6 +7,9 @@ def _get_string_similarity(s1: str, s2: str) -> float:
     # Levenshtein.distance 算出的是 "編輯距離" (差多少)
     # 我們將其標準化為 "相似度" (0.0 ~ 1.0)
     # 1.0 表示完全相同
+    # 如果兩個字串都是空的，視為完全相似；若其中一個為空則視為完全不相似
+    if (s1 is None or s1 == "") and (s2 is None or s2 == ""):
+        return 1.0
     if not s1 or not s2:
         return 0.0
     distance = Levenshtein.distance(s1.lower(), s2.lower())

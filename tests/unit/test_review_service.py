@@ -207,3 +207,86 @@ async def test_get_reviews_fail_permission(mock_db_session, mock_user_employer, 
     with pytest.raises(HTTPException) as exc:
         await service.get_reviews_for_contract("c1", mock_user_employer)
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_create_review_employer_profile_missing_clears_cache(mock_db_session, mock_user_employer, mocker):
+    """雇主評價時，即使找不到 FreelancerProfile，也要清除相關快取"""
+    service = ReviewService(mock_db_session)
+    contract_id = "c100"
+    freelancer_id = "worker_100"
+
+    mock_contract = Contract(contract_id=contract_id, status="已完成", employer_id=mock_user_employer.user_id, freelancer_id=freelancer_id)
+    mocker.patch.object(service.contract_repo, 'get_contract_by_id', return_value=mock_contract)
+    mocker.patch.object(service.repo, 'get_review_by_contract_and_reviewer', return_value=None)
+    mocker.patch.object(service.repo, 'create_review', return_value=Review(review_id="r100"))
+    mocker.patch.object(service.repo, 'calculate_freelancer_average_rating', return_value=4.2)
+
+    # profile lookup returns None -> simulate missing profile
+    mocker.patch.object(service.profile_repo, 'get_freelancer_profile_by_user_id', return_value=None)
+
+    # patch redis manager calls
+    mock_del_pattern = mocker.patch('app.services.review_service.redis_manager.delete_keys_by_pattern', new_callable=AsyncMock)
+    mock_del_key = mocker.patch('app.services.review_service.redis_manager.delete_key', new_callable=AsyncMock)
+
+    review_data = ReviewCreate(
+        contract_id=contract_id,
+        rating_communication_fw=5.0,
+        rating_professionalism_fw=5.0,
+        rating_punctuality_fw=4.0,
+        rating_quality_fw=4.5,
+        comment="nice"
+    )
+
+    res = await service.create_review(review_data, mock_user_employer)
+    assert res.review_id == "r100"
+
+    # verify cache-clearing calls happened
+    mock_del_pattern.assert_any_call("review:stats:freelancer:*")
+    mock_del_key.assert_any_call(f"profile:freelancer:view:{freelancer_id}")
+    mock_del_pattern.assert_any_call("profile:search:*")
+
+
+@pytest.mark.asyncio
+async def test_create_review_freelancer_clears_employer_cache(mock_db_session, mock_user_freelancer, mocker):
+    """工作者評價雇主時，應清除 employer 相關快取"""
+    service = ReviewService(mock_db_session)
+    contract_id = "c200"
+    employer_id = "boss_200"
+
+    mock_contract = Contract(contract_id=contract_id, status="已完成", employer_id=employer_id, freelancer_id=mock_user_freelancer.user_id)
+    mocker.patch.object(service.contract_repo, 'get_contract_by_id', return_value=mock_contract)
+    mocker.patch.object(service.repo, 'get_review_by_contract_and_reviewer', return_value=None)
+    mocker.patch.object(service.repo, 'create_review', return_value=Review(review_id="r200"))
+
+    mock_del_pattern = mocker.patch('app.services.review_service.redis_manager.delete_keys_by_pattern', new_callable=AsyncMock)
+    mock_del_key = mocker.patch('app.services.review_service.redis_manager.delete_key', new_callable=AsyncMock)
+
+    review_data = ReviewCreate(
+        contract_id=contract_id,
+        rating_communication_we=5.0,
+        rating_quality_we=5.0,
+        rating_compensation_we=5.0,
+        rating_process_we=5.0,
+    )
+
+    res = await service.create_review(review_data, mock_user_freelancer)
+    assert res.review_id == "r200"
+
+    mock_del_pattern.assert_called_with("review:stats:employer:*")
+    mock_del_key.assert_called_with(f"profile:employer:view:{employer_id}")
+
+
+@pytest.mark.asyncio
+async def test_get_reviews_for_contract_success(mock_db_session, mock_user_employer, mocker):
+    """成功取得合約評價列表"""
+    service = ReviewService(mock_db_session)
+    contract_id = "c_view"
+    mock_contract = Contract(contract_id=contract_id, employer_id=mock_user_employer.user_id, freelancer_id="w1")
+    mocker.patch.object(service.contract_repo, 'get_contract_by_id', return_value=mock_contract)
+
+    sample_reviews = [Review(review_id="rv1"), Review(review_id="rv2")]
+    mocker.patch.object(service.repo, 'get_reviews_by_contract_id', return_value=sample_reviews)
+
+    res = await service.get_reviews_for_contract(contract_id, mock_user_employer)
+    assert res == sample_reviews

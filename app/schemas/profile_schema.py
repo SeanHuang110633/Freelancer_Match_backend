@@ -44,6 +44,13 @@ class FreelancerProfileOut(FreelancerProfileBase):
     class Config:
         from_attributes = True
 
+# (新增) 分頁回傳結構 - 搜尋結果用
+class PaginatedFreelancerSearchOut(BaseModel):
+    items: List[FreelancerProfileOut]
+    total: int = Field(..., description="Total count")
+    class Config:
+        from_attributes = True
+
 # 用於推薦列表的回傳格式
 class FreelancerRecommendationOut(BaseModel):
     profile: FreelancerProfileOut # 巢狀包含完整的 Profile 資料

@@ -1,5 +1,5 @@
 # app/routers/profile_router.py
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -8,7 +8,8 @@ from app.services.profile_service import ProfileService
 from app.schemas.profile_schema import (
     FreelancerProfileCreate, EmployerProfileCreate,
     FreelancerProfileOut, EmployerProfileOut,
-    UserSkillsUpdate, UserSkillTagOut, FreelancerProfileUpdate, EmployerProfileUpdate
+    UserSkillsUpdate, UserSkillTagOut, FreelancerProfileUpdate, EmployerProfileUpdate,
+    PaginatedFreelancerSearchOut # (新增)
 )
 from typing import Union, List
 
@@ -129,15 +130,18 @@ async def get_public_employer_profile(
 
 @router.get(
     "/freelancers/search", 
-    response_model=List[FreelancerProfileOut],
-    summary="搜尋公開的工作者"
+    response_model=PaginatedFreelancerSearchOut, # (修改) 回傳型別
+    summary="搜尋公開的工作者 (分頁)"
 )
 async def search_public_freelancers(
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    # (新增) 分頁參數
+    page: int = Query(1, ge=1, description="頁碼"),
+    size: int = Query(20, ge=1, le=100, description="每頁筆數")
 ):
     """
-    (雇主) 依技能標籤搜尋「公開」的工作者 Profile。
+    (雇主) 依技能標籤搜尋「公開」的工作者 Profile (分頁)。
     """
     tag_ids_from_query = request.query_params.getlist("tag_id")
     if not tag_ids_from_query:
@@ -145,7 +149,16 @@ async def search_public_freelancers(
     
     tag_ids = tag_ids_from_query if tag_ids_from_query else None
     
+    # 計算 offset
+    limit = size
+    offset = (page - 1) * size
+
     service = ProfileService(db)
-    profiles = await service.search_freelancers(tag_ids=tag_ids)
+    # 呼叫 Service (已改為支援分頁)
+    result = await service.search_freelancers(
+        tag_ids=tag_ids, 
+        limit=limit, 
+        offset=offset
+    )
     
-    return profiles
+    return result

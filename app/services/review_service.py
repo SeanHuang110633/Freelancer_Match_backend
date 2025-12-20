@@ -11,6 +11,9 @@ from app.repositories.contract_repo import ContractRepository
 from app.repositories.profile_repo import ProfileRepository # 用於更新分數
 from app.schemas.review_schema import ReviewCreate
 
+# (新增) 匯入 Redis Manager
+from app.core.redis import redis_manager
+
 class ReviewService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -92,7 +95,7 @@ class ReviewService:
         # 6. 儲存評價
         saved_review = await self.repo.create_review(new_review)
 
-        # 7. (關鍵) 觸發信譽更新
+        # 7. (關鍵) 觸發信譽更新與快取清除
         # 目前系統僅 FreelancerProfile 有 reputation_score 欄位
         if role_mode == "employer_reviewing":
             # 重新計算工作者的平均分
@@ -103,10 +106,24 @@ class ReviewService:
             if profile:
                 profile.reputation_score = new_avg_score
                 # 這裡我們直接複用 repo 的 update 方法 (需確保該方法支援 partial update 或我們手動 commit)
-                # 由於 profile_repo.update_freelancer_profile 需要 Pydantic schema，
-                # 這裡我們直接操作 ORM 物件並 commit 比較快
                 self.db.add(profile)
                 await self.db.commit()
+
+            # 【新增】清除快取：
+            # A. 清除該工作者的評分統計快取 (由於 Hash Key 難以預測，清除該類別所有 Pattern)
+            await redis_manager.delete_keys_by_pattern("review:stats:freelancer:*")
+            
+            # B. 清除該工作者的 Profile View 快取 (這可以精準清除)
+            # 因為 Profile View 裡面包含了注入的評分資料，所以必須清除讓它重抓
+            await redis_manager.delete_key(f"profile:freelancer:view:{reviewee_id}")
+            
+            # C. 清除搜尋列表快取 (因為 reputation_score 變了，可能會影響排序)
+            await redis_manager.delete_keys_by_pattern("profile:search:*")
+
+        else:
+            # 即使是雇主被評，也要清除其評分統計與 View 快取
+            await redis_manager.delete_keys_by_pattern("review:stats:employer:*")
+            await redis_manager.delete_key(f"profile:employer:view:{reviewee_id}")
 
         return saved_review
 

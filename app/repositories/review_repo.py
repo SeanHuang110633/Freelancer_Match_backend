@@ -6,6 +6,8 @@ from sqlalchemy import func, or_
 from typing import List, Optional, Dict
 
 from app.models.review import Review
+# (新增) 匯入快取
+from app.core.cache import cached
 
 class ReviewRepository:
     def __init__(self, db: AsyncSession):
@@ -63,11 +65,16 @@ class ReviewRepository:
         average = result.scalar()
         return float(average) if average else 5.0
 
-    # --- (新增) 計算詳細指標平均分 ---
+    # --- (新增) 計算詳細指標平均分 (加上快取) ---
 
+    # Key: review:stats:freelancer:<hash_of_args>
+    # 由於參數只有 freelancer_id，我們可以預期 Key 雖然是 Hash 過的，但對於同一個 ID 是固定的。
+    # 不過為了清除方便，我們稍後在 Service 層會使用 Pattern Deletion 或其他方式。
+    # 這裡設定 1 小時過期 (3600秒)
+    @cached(key_prefix="review:stats:freelancer", expire=3600)
     async def get_freelancer_detailed_ratings(self, freelancer_id: str) -> Dict[str, float]:
         """
-        (Agg) 取得工作者的四項詳細指標平均分
+        (Agg) 取得工作者的四項詳細指標平均分 (Cached)
         """
         stmt = select(
             func.avg(Review.rating_communication_fw).label("avg_communication"),
@@ -81,7 +88,16 @@ class ReviewRepository:
         )
 
         result = await self.db.execute(stmt)
-        row = result.one()
+        try:
+            row = result.one()
+        except Exception:
+            # 處理查無資料的情況 (雖然 avg 通常會回傳 None)
+            return {
+                "avg_communication": 0.0,
+                "avg_professionalism": 0.0,
+                "avg_punctuality": 0.0,
+                "avg_quality": 0.0
+            }
 
         # 若無評價，回傳 0.0
         return {
@@ -91,9 +107,10 @@ class ReviewRepository:
             "avg_quality": float(row.avg_quality) if row.avg_quality else 0.0
         }
 
+    @cached(key_prefix="review:stats:employer", expire=3600)
     async def get_employer_detailed_ratings(self, employer_id: str) -> Dict[str, float]:
         """
-        (Agg) 取得雇主的四項詳細指標平均分
+        (Agg) 取得雇主的四項詳細指標平均分 (Cached)
         """
         stmt = select(
             func.avg(Review.rating_communication_we).label("avg_communication"),
@@ -107,7 +124,15 @@ class ReviewRepository:
         )
 
         result = await self.db.execute(stmt)
-        row = result.one()
+        try:
+            row = result.one()
+        except Exception:
+            return {
+                "avg_communication": 0.0,
+                "avg_quality": 0.0,
+                "avg_compensation": 0.0,
+                "avg_process": 0.0
+            }
 
         return {
             "avg_communication": float(row.avg_communication) if row.avg_communication else 0.0,

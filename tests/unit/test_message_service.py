@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import HTTPException
 import json
 from datetime import datetime
+import asyncio
 
 from app.services.message_service import MessageService
 from app.schemas.message_schema import RoomCreate, MessageIn
@@ -470,6 +471,64 @@ async def test_manager_broadcast_send_error_cleanup(mocker):
     # 驗證是否呼叫 disconnect 清理 Bad ws
     spy_disconnect.assert_called_once_with(room_id, "[internal_cleanup]", mock_ws_bad)
 
+
+@pytest.mark.asyncio
+async def test_redis_listener_loop_cleanup(mocker):
+    """測試：Redis listener 任務在被取消時應正確 unsubscribe 並關閉 client"""
+    from app.services.message_service import manager
+
+    room_id = "room_redis"
+
+    class DummyPubSub:
+        def __init__(self):
+            self.subscribed = False
+            self.unsubscribed = False
+
+        async def subscribe(self, channel):
+            self.subscribed = True
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
+            # 模擬被取消以觸發 listener 的 CancelledError 分支
+            raise asyncio.CancelledError()
+
+        async def unsubscribe(self, channel):
+            self.unsubscribed = True
+
+    class DummyPubSubCtx:
+        def __init__(self, pubsub):
+            self._pubsub = pubsub
+
+        async def __aenter__(self):
+            return self._pubsub
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyRedis:
+        def __init__(self, pubsub):
+            self._pubsub = pubsub
+            self.closed = False
+
+        def pubsub(self):
+            return DummyPubSubCtx(self._pubsub)
+
+        async def aclose(self):
+            self.closed = True
+
+    pubsub = DummyPubSub()
+    dummy_redis = DummyRedis(pubsub)
+
+    # patch aioredis.from_url to return our dummy redis client (synchronously)
+    mocker.patch("app.services.message_service.aioredis.from_url", new=lambda *a, **kw: dummy_redis)
+
+    # run the listener coroutine directly (it will exit when get_message raises CancelledError)
+    await manager._redis_listener_loop(room_id)
+
+    # assertions: subscribed then unsubscribed and client closed
+    assert pubsub.subscribed is True
+    assert pubsub.unsubscribed is True
+    assert dummy_redis.closed is True
+
 # ==========================================
 # Part 9: 補強 get_user_rooms 的異常處理 (Line 180-182)
 # ==========================================
@@ -490,3 +549,311 @@ async def test_get_user_rooms_serialization_error(mock_db_session, mock_user_fre
     
     assert exc.value.status_code == 500
     assert "serialize" in exc.value.detail
+
+# ==========================================
+# Part 10: 補強權限檢查細節 (check_user_room_permission)
+# ==========================================
+
+@pytest.mark.asyncio
+async def test_check_permission_success(mock_db_session, mock_user_freelancer, mocker):
+    """測試：檢查權限成功 (True)"""
+    service = MessageService(mock_db_session, AsyncMock())
+    mock_room = ChatRoom(participants=[ChatRoomParticipant(user_id=mock_user_freelancer.user_id)])
+    mocker.patch.object(service.message_repo, 'get_room_by_id_with_participants', return_value=mock_room)
+
+    result = await service.check_user_room_permission("room_1", mock_user_freelancer)
+    assert result is True
+
+@pytest.mark.asyncio
+async def test_check_permission_room_not_found(mock_db_session, mock_user_freelancer, mocker):
+    """測試：檢查權限時房間不存在 (404)"""
+    service = MessageService(mock_db_session, AsyncMock())
+    mocker.patch.object(service.message_repo, 'get_room_by_id_with_participants', return_value=None)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.check_user_room_permission("room_404", mock_user_freelancer)
+    assert exc.value.status_code == 404
+
+# ==========================================
+# Part 11: 補強建立聊天室邏輯 (Create Room)
+# ==========================================
+
+@pytest.mark.asyncio
+async def test_create_chat_room_creator_is_invited(mock_db_session, mock_user_freelancer, mocker):
+    """
+    測試：創建者即為被邀請者 (例如工作者點擊雇主 Say Hi，反向邏輯)
+    代碼路徑：elif creator.user_id == invited_id:
+    """
+    service = MessageService(mock_db_session, AsyncMock())
+    
+    # 假設專案是雇主的
+    employer_id = "boss_1"
+    mock_project = Project(project_id="p1", employer_id=employer_id)
+    mocker.patch.object(service.project_repo, 'get_project_by_id', return_value=mock_project)
+    mocker.patch.object(service.message_repo, 'find_room_by_participants', return_value=None)
+    
+    # Mock Create
+    mock_new_room = ChatRoom(room_id="new_room", created_at=datetime.now())
+    mock_create = mocker.patch.object(service.message_repo, 'create_room_and_participants', return_value=mock_new_room)
+
+    # Act: 工作者 (freelancer) 邀請 自己 (freelancer) -> 其實是想跟雇主聊
+    # 這會觸發 logic: participant_ids_list = [employer_id, creator.user_id]
+    room_data = RoomCreate(project_id="p1", invited_user_id=mock_user_freelancer.user_id)
+    await service.create_chat_room(room_data, mock_user_freelancer)
+
+    # Assert
+    # 驗證參與者是否為 [employer_id, freelancer_id]
+    call_args = mock_create.call_args[1]
+    participants = call_args['participant_ids']
+    assert set(participants) == {employer_id, mock_user_freelancer.user_id}
+
+@pytest.mark.asyncio
+async def test_create_chat_room_project_not_found(mock_db_session, mock_user_employer, mocker):
+    """測試：建立聊天室時專案不存在"""
+    service = MessageService(mock_db_session, AsyncMock())
+    mocker.patch.object(service.project_repo, 'get_project_by_id', return_value=None)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.create_chat_room(RoomCreate(project_id="p_404"), mock_user_employer)
+    assert exc.value.status_code == 404
+
+# ==========================================
+# Part 12: 補強 WebSocket JSON 解析錯誤
+# ==========================================
+
+@pytest.mark.asyncio
+async def test_handle_websocket_message_json_error(mock_db_session, mocker):
+    """測試：WebSocket 收到無效 JSON"""
+    service = MessageService(mock_db_session, AsyncMock())
+    
+    # 壞掉的 JSON
+    bad_data = "{'content': 'oops', no_quote_key}" 
+    
+    with pytest.raises(ValueError) as exc:
+        await service.handle_websocket_message("r1", "u1", bad_data)
+    
+    assert "Message processing error" in str(exc.value)
+    # 驗證有紀錄 error log (透過 mock_db_session rollback 側面印證進入了 except block)
+    mock_db_session.rollback.assert_called_once()
+
+# ==========================================
+# Part 13: 補強 WebSocket 處理邊界案例 (提升 MessageService 覆蓋率)
+# ==========================================
+
+@pytest.mark.asyncio
+async def test_handle_websocket_message_no_sender_info(mock_db_session, mocker):
+    """
+    測試：儲存訊息後，如果 new_message.sender 為 None (Repo 失敗/未載入)，
+    通知標題應該使用「某人」來避免崩潰。
+    (覆蓋 new_message.sender else "某人" 分支)
+    """
+    # Arrange
+    mock_redis = AsyncMock()
+    service = MessageService(mock_db_session, mock_redis)
+    room_id = "room_1_no_sender"
+    sender_id = "sender_1"
+    raw_data = json.dumps({"content": "Hello World", "content_type": "text"})
+    
+    mock_room = ChatRoom(
+        room_id=room_id, 
+        project=Project(title="Proj"),
+        participants=[ChatRoomParticipant(user_id="receiver_1")]
+    )
+    mocker.patch.object(service.message_repo, 'get_room_by_id_with_participants', return_value=mock_room)
+    
+    # Mock saved message, but explicitly set sender to None 
+    mock_saved_msg = Message(
+        message_id="msg_new",
+        room_id=room_id,
+        sender_id=sender_id,
+        content="Hello World", 
+        content_type="text",
+        is_read=False,
+        created_at=datetime.now(),
+        sender=None # <-- 關鍵：模擬 sender 載入失敗
+    )
+    mocker.patch.object(service.message_repo, 'save_message', return_value=mock_saved_msg)
+    mocker.patch.object(mock_db_session, 'refresh', new_callable=AsyncMock)
+    
+    mock_notify = mocker.patch.object(service.notification_service, 'create_notification', new_callable=AsyncMock)
+
+    # Act
+    await service.handle_websocket_message(room_id, sender_id, raw_data)
+
+    # Assert
+    mock_notify.assert_called_once()
+    assert "某人" in mock_notify.call_args[1]['message'] # 驗證使用了「某人」
+    mock_redis.publish.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_websocket_message_single_participant(mock_db_session, mocker):
+    """
+    測試：聊天室只有一個參與者 (發送者自己)，不應發送通知
+    (覆蓋 if p.user_id != sender_id: 判斷為 False 的分支)
+    """
+    # Arrange
+    mock_redis = AsyncMock()
+    service = MessageService(mock_db_session, mock_redis)
+    room_id = "room_1_single"
+    sender_id = "sender_1"
+    raw_data = json.dumps({"content": "Hello World", "content_type": "text"})
+    
+    # 房間只有發送者自己
+    mock_room = ChatRoom(
+        room_id=room_id, 
+        project=Project(title="Proj"),
+        participants=[ChatRoomParticipant(user_id=sender_id)] # <-- 關鍵：只有一個參與者
+    )
+    mocker.patch.object(service.message_repo, 'get_room_by_id_with_participants', return_value=mock_room)
+    
+    # Mock sender User object
+    mock_sender_user = User(user_id=sender_id, email="s@test.com", role="自由工作者", is_active=True)
+    mock_saved_msg = Message(
+        message_id="msg_new", room_id=room_id, sender_id=sender_id,
+        content="Hello World", content_type="text", is_read=False, created_at=datetime.now(),
+        sender=mock_sender_user
+    )
+    mocker.patch.object(service.message_repo, 'save_message', return_value=mock_saved_msg)
+    mocker.patch.object(mock_db_session, 'refresh', new_callable=AsyncMock)
+
+    mock_notify = mocker.patch.object(service.notification_service, 'create_notification', new_callable=AsyncMock)
+
+    # Act
+    await service.handle_websocket_message(room_id, sender_id, raw_data)
+
+    # Assert
+    # 驗證通知沒有被呼叫
+    mock_notify.assert_not_called()
+    mock_redis.publish.assert_called_once() # Publish 還是要發送，確保即時通訊正常
+
+
+@pytest.mark.asyncio
+async def test_manager_disconnect_no_room_does_not_raise():
+    """Calling disconnect for a non-existent room should not raise."""
+    from app.services.message_service import manager
+
+    room_id = "no_such_room"
+    # Ensure clean state
+    if room_id in manager.local_connections:
+        del manager.local_connections[room_id]
+    if room_id in manager.listener_tasks:
+        del manager.listener_tasks[room_id]
+
+    fake_ws = MagicMock()
+    # Should not raise
+    manager.disconnect(room_id, "u1", fake_ws)
+
+
+@pytest.mark.asyncio
+async def test_manager_connect_idempotent(mocker):
+    """If a listener task already exists, connect should not start a new one."""
+    from app.services.message_service import manager
+
+    room_id = "idempotent_room"
+    user_id = "u1"
+    mock_ws = AsyncMock()
+
+    # clean state
+    if room_id in manager.local_connections:
+        del manager.local_connections[room_id]
+    # pre-create a listener task
+    manager.listener_tasks[room_id] = MagicMock()
+
+    mock_create = mocker.patch("asyncio.create_task")
+    await manager.connect(room_id, user_id, mock_ws)
+
+    # since listener_tasks already had an entry, create_task should not be called
+    mock_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_redis_listener_exception_closes_client(mocker):
+    """If the redis listener raises, it unsubscribes and closes client."""
+    from app.services.message_service import manager
+
+    room_id = "room_exc"
+
+    class DummyPubSub:
+        def __init__(self):
+            self.subscribed = False
+            self.unsubscribed = False
+
+        async def subscribe(self, channel):
+            self.subscribed = True
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
+            # raise generic exception to exercise except branch
+            raise Exception("boom")
+
+        async def unsubscribe(self, channel):
+            self.unsubscribed = True
+
+    class DummyPubSubCtx:
+        def __init__(self, pubsub):
+            self._pubsub = pubsub
+
+        async def __aenter__(self):
+            return self._pubsub
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyRedis:
+        def __init__(self, pubsub):
+            self._pubsub = pubsub
+            self.closed = False
+
+        def pubsub(self):
+            return DummyPubSubCtx(self._pubsub)
+
+        async def aclose(self):
+            self.closed = True
+
+    pubsub = DummyPubSub()
+    dummy_redis = DummyRedis(pubsub)
+
+    mocker.patch("app.services.message_service.aioredis.from_url", new=lambda *a, **kw: dummy_redis)
+
+    await manager._redis_listener_loop(room_id)
+
+    assert pubsub.subscribed is True
+    assert pubsub.unsubscribed is True
+    assert dummy_redis.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_websocket_message_multiple_receivers_triggers_multiple_notifications(mock_db_session, mocker):
+    """When multiple participants aside from sender exist, notifications should be sent to each."""
+    mock_redis = AsyncMock()
+    service = MessageService(mock_db_session, mock_redis)
+    room_id = "room_multi"
+    sender_id = "sender_1"
+    raw_data = json.dumps({"content": "Hello All", "content_type": "text"})
+
+    mock_room = ChatRoom(
+        room_id=room_id,
+        project=Project(title="Proj"),
+        participants=[
+            ChatRoomParticipant(user_id=sender_id),
+            ChatRoomParticipant(user_id="r1"),
+            ChatRoomParticipant(user_id="r2")
+        ]
+    )
+    mocker.patch.object(service.message_repo, 'get_room_by_id_with_participants', return_value=mock_room)
+
+    mock_sender_user = User(user_id=sender_id, email="s@test.com", role="自由工作者", is_active=True)
+    mock_saved_msg = Message(
+        message_id="m1", room_id=room_id, sender_id=sender_id,
+        content="Hello All", content_type="text", is_read=False, created_at=datetime.now(), sender=mock_sender_user
+    )
+    mocker.patch.object(service.message_repo, 'save_message', return_value=mock_saved_msg)
+    mocker.patch.object(mock_db_session, 'refresh', new_callable=AsyncMock)
+
+    mock_notify = mocker.patch.object(service.notification_service, 'create_notification', new_callable=AsyncMock)
+
+    await service.handle_websocket_message(room_id, sender_id, raw_data)
+
+    # two notifications for r1 and r2
+    assert mock_notify.call_count == 2
+    mock_redis.publish.assert_called_once()

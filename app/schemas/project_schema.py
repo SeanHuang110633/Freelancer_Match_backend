@@ -3,20 +3,17 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 from app.schemas.proposal_schema import ProposalOutWithFreelancer, ProposalOutWithFullProject
-from app.schemas.skill_tag_schema import SkillTagOut # 複用我們在 Step 4 建立的 Schema
+from app.schemas.skill_tag_schema import SkillTagOut 
 from app.schemas.user_schema import UserOutWithEmployerProfile
 
 # 1. 用於在 ProjectOut 中顯示巢狀的技能標籤
 class ProjectSkillTagOut(BaseModel):
     tag: SkillTagOut
-    # 案件需求標籤沒有 "熟悉度"
-
     class Config:
-        from_attributes = True # 啟用 ORM 模式
+        from_attributes = True 
 
 # 2. 基礎欄位 (對應 Model)
 class ProjectBase(BaseModel):
-    # 欄位符合需求文件 和 DDL
     title: str = Field(..., max_length=255)
     description: str
     location: Optional[str] = Field(None, max_length=255)
@@ -29,11 +26,9 @@ class ProjectBase(BaseModel):
 
 # 3. 雇主刊登案件時的 Request Body (Input)
 class ProjectCreate(ProjectBase):
-    # (重要) 雇主在前端選擇的技能標籤 ID 列表
     skill_tag_ids: List[str] = []
 
 # 4. 雇主更新案件時的 Request Body (Input)
-# (所有欄位皆可選)
 class ProjectUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
@@ -50,23 +45,28 @@ class ProjectUpdate(BaseModel):
 # 5. 回傳給前端的案件資料 (Output)
 class ProjectOut(ProjectBase):
     project_id: str
-    # (修改) 移除 employer_id，改用巢狀物件
-    # employer_id: str
-    employer: UserOutWithEmployerProfile # <-- (修改)
+    employer: UserOutWithEmployerProfile 
     status: str
-    # (重要) 巢狀回傳完整的技能標籤資料
     skills: List[ProjectSkillTagOut] = []
 
     class Config:
-        from_attributes = True # 啟用 ORM 模式
+        from_attributes = True 
+
+# (新增) 分頁的案件搜尋回應格式
+class PaginatedProjectSearchOut(BaseModel):
+    items: List[ProjectOut]
+    total: int = Field(..., description="Total count")
+
+    class Config:
+        from_attributes = True
 
 # 6. 推薦系統使用的回應格式
 class ProjectRecommendationOut(BaseModel):
-    project: ProjectOut # 巢狀包含完整的 Project 資料
+    project: ProjectOut 
     recommendation_score: float = Field(..., description="推薦匹配分數")
 
     class Config:
-        from_attributes = True # 允許從非 dict 物件建立
+        from_attributes = True 
 
 # 7. 分頁的推薦案件回應格式
 class PaginatedProjectRecommendationOut(BaseModel):
@@ -76,23 +76,14 @@ class PaginatedProjectRecommendationOut(BaseModel):
     class Config:
         from_attributes = True
 
-
-# 8. 用於雇主管理案件的提案，回傳案件詳情以及所有關聯的提案列表
+# 8. 用於雇主管理案件的提案
 class ProjectWithProposalsOut(ProjectOut):
-    """
-    用於雇主管理介面，回傳案件詳情以及所有關聯的提案列表
-    """
     proposals: List[ProposalOutWithFreelancer] = []
-
     class Config:
         from_attributes = True
-
 
 # (新增) 需求二：用於更新狀態的 Schema
 class ProjectStatusUpdate(BaseModel):
     status: str = Field(..., enum=['招募中', '已關閉', '已成案'])
 
-# (重要新增) 
-# 在檔案的最底部，所有 Class 都定義完成後
-# 呼叫 .model_rebuild() 來解析 ProposalOutWithFullProject 中的 "ProjectOut" 字串
 ProposalOutWithFullProject.model_rebuild()

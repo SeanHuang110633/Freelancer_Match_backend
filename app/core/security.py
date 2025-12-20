@@ -16,7 +16,12 @@ from app.core.config import settings
 # (錯誤已移除) 移除 from app.services.auth_service import AuthService
 
 # 1. 密碼雜湊設定 (Bcrypt)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# 指定 rounds=10 以降低 CPU 負載 (適合測試環境或低資源機器)
+pwd_context = CryptContext(
+    schemes=["bcrypt"], 
+    deprecated="auto",
+    bcrypt__rounds=10  # <--- 加入這一行
+)
 
 # 2. (重要) 定義 Token 從哪裡來 (Authorization Header)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")

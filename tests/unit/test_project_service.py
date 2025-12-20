@@ -220,3 +220,164 @@ async def test_get_project_details_not_found(mock_db_session, mocker):
     with pytest.raises(HTTPException) as exc:
         await service.get_project_details("p_404")
     assert exc.value.status_code == 404
+
+# ==========================================
+# Part 5: 補強搜尋與查詢 (Search & Get)
+# ==========================================
+
+@pytest.mark.asyncio
+async def test_search_projects_success(mock_db_session, mocker):
+    """測試：搜尋案件 (分頁與篩選)"""
+    service = ProjectService(mock_db_session)
+    
+    # 模擬 Repo 回傳
+    mock_projects = [Project(project_id="p1"), Project(project_id="p2")]
+    mocker.patch.object(service.project_repo, 'list_projects', return_value=mock_projects)
+    mocker.patch.object(service.project_repo, 'count_projects', return_value=10)
+
+    # Act
+    result = await service.search_projects(
+        tag_ids=["tag1"], 
+        location="Taipei", 
+        work_type="遠端", 
+        limit=10, 
+        offset=0
+    )
+
+    # Assert
+    assert result["items"] == mock_projects
+    assert result["total"] == 10
+    service.project_repo.list_projects.assert_called_once_with(
+        tag_ids=["tag1"], location="Taipei", work_type="遠端", limit=10, offset=0
+    )
+
+@pytest.mark.asyncio
+async def test_get_my_projects_success(mock_db_session, mock_user_employer, mocker):
+    """測試：雇主獲取自己的案件 (成功)"""
+    service = ProjectService(mock_db_session)
+    mock_projects = [Project(project_id="p1", employer_id=mock_user_employer.user_id)]
+    mocker.patch.object(service.project_repo, 'list_projects_by_employer_id', return_value=mock_projects)
+
+    result = await service.get_my_projects(mock_user_employer)
+    assert len(result) == 1
+    assert result[0].project_id == "p1"
+
+@pytest.mark.asyncio
+async def test_get_project_details_success(mock_db_session, mocker):
+    """測試：獲取案件詳情 (成功)"""
+    service = ProjectService(mock_db_session)
+    # 這裡回傳的是 Schema (ProjectOut)，因為 Service 呼叫的是 get_project_view
+    # 我們用 MagicMock 模擬 ProjectOut
+    mock_project_out = MagicMock()
+    mock_project_out.project_id = "p1"
+    
+    mocker.patch.object(service.project_repo, 'get_project_view', return_value=mock_project_out)
+
+    result = await service.get_project_details("p1")
+    assert result.project_id == "p1"
+
+# ==========================================
+# Part 6: 補強更新邏輯分支 (Update Edge Cases)
+# ==========================================
+
+@pytest.mark.asyncio
+async def test_update_project_partial_no_skills(mock_db_session, mock_user_employer, mocker):
+    """測試：更新案件但不更新技能 (skill_tag_ids 為 None)"""
+    service = ProjectService(mock_db_session)
+    mock_project = Project(project_id="p1", employer_id=mock_user_employer.user_id, status="招募中")
+    mocker.patch.object(service.project_repo, 'get_project_by_id', return_value=mock_project)
+    
+    # 模擬不含 skill_tag_ids 的 Update Data
+    update_data = ProjectUpdate(title="New Title") 
+    # 這裡很重要，預設可能是 None，確保它真的是 None
+    assert update_data.skill_tag_ids is None
+
+    mock_update_skills = mocker.patch.object(service.project_repo, 'update_project_skills')
+    mocker.patch.object(service.project_repo, 'update_project', return_value=mock_project)
+    # 模擬沒有提案的狀況，避免跑通知邏輯
+    mocker.patch.object(service.project_repo, 'get_project_by_id_with_proposals', return_value=None)
+
+    await service.update_project("p1", update_data, mock_user_employer)
+
+    # 驗證 update_project_skills 沒有被呼叫
+    mock_update_skills.assert_not_called()
+    assert mock_project.title == "New Title"
+
+@pytest.mark.asyncio
+async def test_update_project_status_closed_no_proposals(mock_db_session, mock_user_employer, mocker):
+    """測試：關閉案件但沒有任何提案 (不需發送通知)"""
+    service = ProjectService(mock_db_session)
+    mock_project = Project(project_id="p1", employer_id=mock_user_employer.user_id, status="招募中")
+    
+    mocker.patch.object(service.project_repo, 'get_project_by_id', return_value=mock_project)
+    mocker.patch.object(service.project_repo, 'update_project', return_value=mock_project)
+    
+    # get_project_by_id_with_proposals 回傳 None 或空
+    mocker.patch.object(service.project_repo, 'get_project_by_id_with_proposals', return_value=None)
+    
+    mock_notify = mocker.patch.object(service.notification_service, 'create_notification', new_callable=AsyncMock)
+
+    await service.update_project_status("p1", ProjectStatusUpdate(status="已關閉"), mock_user_employer)
+
+    # 狀態變更成功，但沒發通知
+    assert mock_project.status == "已關閉"
+    mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_project_skill_tags_empty_calls_update_skills_and_clear_cache(mock_db_session, mock_user_employer, mocker):
+    """測試：更新案件但提供空的 skill_tag_ids (應呼叫 update_project_skills 並清除快取)"""
+    service = ProjectService(mock_db_session)
+    project_id = "p1"
+    mock_project = Project(project_id=project_id, employer_id=mock_user_employer.user_id, status="招募中")
+    mocker.patch.object(service.project_repo, 'get_project_by_id', return_value=mock_project)
+
+    # Provide an explicit empty list for skill_tag_ids
+    update_data = ProjectUpdate(skill_tag_ids=[])
+
+    mock_update_skills = mocker.patch.object(service.project_repo, 'update_project_skills', new_callable=AsyncMock)
+    mocker.patch.object(service.project_repo, 'update_project', return_value=mock_project)
+
+    mock_redis = mocker.patch('app.services.project_service.redis_manager.delete_key', new_callable=AsyncMock)
+
+    # No proposals to avoid notifications
+    mocker.patch.object(service.project_repo, 'get_project_by_id_with_proposals', return_value=None)
+
+    await service.update_project(project_id, update_data, mock_user_employer)
+
+    mock_update_skills.assert_called_once_with(project_id, [])
+    mock_redis.assert_called_once_with(f"project:view:{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_update_project_not_found_raises_404(mock_db_session, mock_user_employer, mocker):
+    """測試：嘗試更新不存在的案件會回傳 404"""
+    service = ProjectService(mock_db_session)
+    mocker.patch.object(service.project_repo, 'get_project_by_id', return_value=None)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_project("missing", ProjectUpdate(title="x"), mock_user_employer)
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_project_status_redis_called_when_closed_with_proposals(mock_db_session, mock_user_employer, mocker):
+    """測試：關閉案件時會呼叫 redis_manager.delete_key (有提案情況)"""
+    service = ProjectService(mock_db_session)
+    project_id = "p1"
+    mock_project = Project(project_id=project_id, employer_id=mock_user_employer.user_id, status="招募中", title="t")
+
+    prop = Proposal(proposal_id="prop", freelancer_id="w1", status="已提交")
+    mock_project_with_props = Project(project_id=project_id, proposals=[prop])
+
+    mocker.patch.object(service.project_repo, 'get_project_by_id', return_value=mock_project)
+    mocker.patch.object(service.project_repo, 'get_project_by_id_with_proposals', return_value=mock_project_with_props)
+    mocker.patch.object(service.project_repo, 'update_project', return_value=mock_project)
+    mocker.patch.object(service.proposal_repo, 'update_proposal', new_callable=AsyncMock)
+    mocker.patch.object(service.notification_service, 'create_notification', new_callable=AsyncMock)
+
+    mock_redis = mocker.patch('app.services.project_service.redis_manager.delete_key', new_callable=AsyncMock)
+
+    await service.update_project_status(project_id, ProjectStatusUpdate(status="已關閉"), mock_user_employer)
+
+    mock_redis.assert_called_once_with(f"project:view:{project_id}")

@@ -1,3 +1,4 @@
+# docker-compose.system_test.yml
 version: "3.8"
 
 services:
@@ -9,6 +10,9 @@ services:
       MYSQL_DATABASE: freelancer_system_db
     ports:
       - "3308:3306"
+    # 【新增設定】掛載 SQL 檔案到自動初始化目錄
+    volumes:
+      - ./backup.sql:/docker-entrypoint-initdb.d/init.sql
     command: --default-authentication-plugin=mysql_native_password --general-log=0 --slow-query-log=0
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -29,7 +33,7 @@ services:
   # 3. 後端 API 服務
   backend_system:
     build:
-      context: . # 當前目錄 (後端根目錄)
+      context: .
       dockerfile: Dockerfile
     container_name: freelancer_backend_system
     depends_on:
@@ -38,16 +42,14 @@ services:
       redis_system:
         condition: service_started
     environment:
-      # 【重要修正】明確指定 PORT 為 8000，覆蓋 Dockerfile 預設的 8080
       PORT: 8000
       DATABASE_URL: mysql+aiomysql://root:root@db_system:3306/freelancer_system_db
       REDIS_URL: redis://redis_system:6379
       JWT_SECRET_KEY: system_test_secret_key
       FILE_STORAGE_MODE: local
-      # 允許來自前端容器(與本機瀏覽器)的 CORS
-      BACKEND_CORS_ORIGINS: '["http://localhost:8080", "http://127.0.0.1:8080"]'
+      BACKEND_CORS_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080"
     ports:
-      - "8000:8000" # Host 8000 -> Container 8000
+      - "8000:8000"
     volumes:
       - ./static/uploads:/app/static/uploads
     networks:
@@ -56,12 +58,11 @@ services:
   # 4. 前端 Vue 服務
   frontend_system:
     build:
-      # 【重要修正】指向前端專案的路徑 (假設前後端資料夾在同一層)
       context: ../freelancer_match_frontend
       dockerfile: Dockerfile
     container_name: freelancer_frontend_system
     ports:
-      - "8080:80" # Host 8080 (瀏覽器訪問用) -> Container 80 (Nginx)
+      - "8080:80"
     depends_on:
       - backend_system
     networks:

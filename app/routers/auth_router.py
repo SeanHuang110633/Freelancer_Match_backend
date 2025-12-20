@@ -52,9 +52,9 @@ async def login_for_access_token(
         password=form_data.password
     )
 
-    logger.info(f"User logged in: {user.user_id}")    
     
     if not user:
+        logger.warning(f"Failed login attempt for email: {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="不正確的帳號或密碼",

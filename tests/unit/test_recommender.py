@@ -1,6 +1,6 @@
 import pytest
 from types import SimpleNamespace
-from app.utils.recommender import calculate_recommendation_scores
+from app.utils.recommender import calculate_recommendation_scores, _get_string_similarity
 
 # 建立一個簡單的假物件來模擬 User/Project，具備 reputation_score 屬性
 def mock_item(id, score=5.0):
@@ -84,3 +84,56 @@ def test_sorting_logic_priority_and_reputation():
 def test_empty_input():
     """測試：沒有輸入技能時回傳空列表"""
     assert calculate_recommendation_scores(set(), []) == []
+
+
+def test_string_similarity_edge_cases():
+    # identical strings -> 1.0
+    assert _get_string_similarity("abc", "abc") == 1.0
+    # case-insensitive
+    assert _get_string_similarity("Python", "python") == 1.0
+    # empty vs empty -> 1.0
+    assert _get_string_similarity("", "") == 1.0
+    # empty vs non-empty -> 0.0
+    assert _get_string_similarity("a", "") == 0.0
+
+
+def test_target_without_skill_names_is_skipped():
+    source_skills = {"go"}
+    targets = [
+        {"item_id": "no_skills", "skill_names": set(), "item_object": mock_item("x")} ,
+        {"item_id": "has_skill", "skill_names": {"go"}, "item_object": mock_item("y")} 
+    ]
+
+    results = calculate_recommendation_scores(source_skills, targets)
+    # only the one with skill should be returned
+    assert len(results) == 1
+    assert results[0]["item_id"] == "has_skill"
+
+
+def test_fuzzy_matches_below_threshold_are_ignored():
+    # a very short token will not meet similarity > 0.7
+    source_skills = {"py"}
+    targets = [
+        {"item_id": "p1", "skill_names": {"python"}, "item_object": mock_item("p1")} 
+    ]
+
+    results = calculate_recommendation_scores(source_skills, targets)
+    # similarity should be <= 0.7 so the item is filtered out
+    assert results == []
+
+
+def test_sorting_handles_missing_reputation_attribute():
+    """若 item_object 沒有 reputation_score，應以 0 為預設進行次排序"""
+    source_skills = {"js"}
+    class NoRepr:
+        pass
+
+    targets = [
+        {"item_id": "A", "skill_names": {"js"}, "item_object": NoRepr()},
+        {"item_id": "B", "skill_names": {"js"}, "item_object": mock_item("B", score=1.0)}
+    ]
+
+    results = calculate_recommendation_scores(source_skills, targets)
+    # Both have same score (1.0) so B (reputation 1.0) should come before A (missing -> 0)
+    assert results[0]["item_id"] == "B"
+    assert results[1]["item_id"] == "A"

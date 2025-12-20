@@ -1,14 +1,19 @@
 # app/repositories/project_repo.py
-# (您可以直接複製並取代整個檔案)
-
 import logging
 import uuid
+import json 
+from fastapi.encoders import jsonable_encoder 
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload, joinedload
 from app.models.user import User
 from app.models.employer_profile import EmployerProfile
+
+# (快取功能) 匯入 Cache 與 Redis
+from pydantic import TypeAdapter 
+from app.core.cache import cached
+from app.core.redis import redis_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,20 +24,17 @@ from fastapi import HTTPException
 # 匯入 Models
 from app.models.project import Project, ProjectSkillTag
 from app.models.user import User
-from app.models.proposal import Proposal # --- (新增) --- 為了 Eager Loading
+from app.models.proposal import Proposal 
 
 # 匯入 Schemas
-from app.schemas.project_schema import ProjectCreate, ProjectUpdate
+from app.schemas.project_schema import ProjectCreate, ProjectUpdate, ProjectOut
 
 class ProjectRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
-    # 建立新案件
+
+    # ... (create_project, get_project_by_id, get_project_by_id_with_proposals, get_project_view 保持不變) ...
     async def create_project(self, project_data: ProjectCreate, employer_id: str) -> Project:
-        """
-        建立新案件 (Project) 並同時寫入 案件-技能 (ProjectSkillTag) 關聯表
-        """
-        
         project_dict = project_data.model_dump(exclude={"skill_tag_ids"})
         new_project_id = str(uuid.uuid4())
         
@@ -56,66 +58,33 @@ class ProjectRepository:
         self.db.add_all(db_skill_tags)
         
         await self.db.commit()
+        # (注意) 搜尋改為分頁且移除快取後，這裡其實不需要清除 "project:list:*" 了
+        # 但保留也無妨，避免有其他地方用到
+        await redis_manager.delete_keys_by_pattern("project:list:*")
         
-        # (修正)
-        # 不要使用 refresh()，而是呼叫 get_project_by_id()
-        # 它會使用 lazy="selectin" 抓取一個完整的、
-        # 已預先載入 skills 和 skills.tag 的物件
         complete_project = await self.get_project_by_id(new_project_id)
-        
         if complete_project is None:
-            # 這種情況幾乎不可能發生，但作為防禦性程式設計
             raise HTTPException(status_code=404, detail="剛建立的案件找不到")
 
-        return complete_project # 回傳這個 Pydantic 可以安全序列化的物件
-    # 獲取單一案件 (包含技能)
+        return complete_project 
+
     async def get_project_by_id(self, project_id: str) -> Project | None:
-        """
-        透過 ID 獲取單一案件 (包含技能)及雇主資訊
-        
-        (這個方法是正確的，因為 select(Project) 會觸發 Model 上的 lazy="selectin")
-        """
-        
-        # (修改)
         stmt = select(Project).where(Project.project_id == project_id)
-        
-        # (重要：新增 Eager Loading 策略)
-        # 載入 Project.employer (User)
-        # 接著載入 User.employer_profile (EmployerProfile)
         stmt = stmt.options(
             joinedload(Project.employer).
             selectinload(User.employer_profile)
         )
-        # (修改結束)
-        
         result = await self.db.execute(stmt)
         return result.scalars().first()
 
-    # 拿到某個案件的所有提案
-    # 補上 ProposalService 需要的函式
     async def get_project_by_id_with_proposals(self, project_id: str) -> Project | None:
-        """
-        透過 ID 獲取單一案件，並 Eager Load (預先載入) 所有關聯的提案
-        以及提案人的資訊 (用於 ProjectWithProposalsOut Schema)
-        """
         stmt = select(Project).where(Project.project_id == project_id).options(
-
-            # --- (新增的修正) ---
-            # 1. (FIX) 載入 ProjectOut 所需的 employer 及其 profile
             joinedload(Project.employer).
             selectinload(User.employer_profile),
-            
-            # 2. (FIX) 顯式載入 ProjectOut 所需的 skills 及其 tag
-            # 雖然 model 中有 lazy="selectin"，但在此處明確定義更為保險
             selectinload(Project.skills).
             joinedload(ProjectSkillTag.tag),
-            # --- (修正結束) ---
-
-            # 1. 載入案件的提案列表 (project.proposals)
             selectinload(Project.proposals).options(
-                # 2. 針對「每一個」提案，載入提案人 (proposal.freelancer)
                 selectinload(Proposal.freelancer).options(
-                    # 3. 針對「每一個」提案人，載入其 Profile (user.freelancer_profile)
                     selectinload(User.freelancer_profile)
                 )
             )
@@ -123,157 +92,156 @@ class ProjectRepository:
         result = await self.db.execute(stmt)
         return result.scalars().first()
 
+    async def get_project_view(self, project_id: str) -> Optional[ProjectOut]:
+        cache_key = f"project:view:{project_id}"
+        cached_data = await redis_manager.get_value(cache_key)
+        if cached_data:
+            try:
+                return ProjectOut.model_validate_json(cached_data)
+            except Exception as e:
+                logger.error(f"Cache deserialize failed for {cache_key}: {e}")
+        
+        project = await self.get_project_by_id(project_id)
+        if not project:
+            return None
+            
+        project_out = ProjectOut.model_validate(project)
+        try:
+            data_dict = jsonable_encoder(project_out)
+            json_str = json.dumps(data_dict)
+            await redis_manager.set_value(cache_key, json_str, expire=300)
+        except Exception as e:
+            logger.error(f"Cache write failed for {cache_key}: {e}")
+            
+        return project_out
 
-    # 條件搜尋案件
+    # 條件搜尋案件 (分頁版)
+    # (修改) 移除 @cached，加入 limit, offset
     async def list_projects(
         self,
         tag_ids: Optional[List[str]] = None,
         location: Optional[str] = None,
-        work_type: Optional[str] = None
+        work_type: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0
     ) -> List[Project]:
         """
-        (核心功能) 依條件複合式搜尋案件
-        1. 技能 (tag_ids): 任一標籤符合 (OR 邏輯)
-        2. 地區 (location): 模糊比對
-        3. 工作型態 (work_type): 精確比對
+        (核心功能) 依條件複合式搜尋案件 (分頁)
         """
-        
-
-        # 基礎查詢 (SELECT * FROM projects)
-        # 我們指定 select(Project) 而非 select(Project.project_id, ...)，
-        # 這樣才能觸發 Model 上的 lazy="selectin" 來自動載入 skills
         stmt = select(Project)
 
-        # (新增) 修正 Bug 1：
-        # 即使是列表查詢，也必須 Eager Load ProjectOut 所需的巢狀資料
+        # Eager Load
         stmt = stmt.options(
             joinedload(Project.employer).
-            selectinload(User.employer_profile)
+            selectinload(User.employer_profile),
+            selectinload(Project.skills).
+            joinedload(ProjectSkillTag.tag) # (確保技能被載入)
         )
-        # (新增結束)
 
-        # 1. 處理技能標籤 (tag_ids)
         if tag_ids:
-            # (重要)
-            # 我們需要 JOIN 關聯表 ProjectSkillTag
-            # 並且篩選 tag_id 在我們傳入的列表中
-            # 這符合需求文件中的 "任一方與條件有相同標籤即匹配成功"
-            # (新增日誌) 確認進入 tag_ids 邏輯
-            logger.info(f"Applying tag_ids filter: {tag_ids}")
-            stmt = stmt.join(
-                ProjectSkillTag, Project.project_id == ProjectSkillTag.project_id
-            ).where(
-                ProjectSkillTag.tag_id.in_(tag_ids)
+            logger.info(f"Applying tag_ids filter (match ALL): {tag_ids}")
+            subq = (
+                select(ProjectSkillTag.project_id)
+                .where(ProjectSkillTag.tag_id.in_(tag_ids))
+                .group_by(ProjectSkillTag.project_id)
+                .having(func.count(func.distinct(ProjectSkillTag.tag_id)) == len(tag_ids))
+                .subquery()
             )
+            stmt = stmt.where(Project.project_id.in_(select(subq.c.project_id)))
 
-        # 2. 處理地區 (location)
         if location:
-            # 使用 ILIKE 進行不分大小寫的模糊比對 (e.g., "台北" 可搜到 "台北市")
-            # (新增日誌) 確認進入 location 邏輯
             logger.info(f"Applying location filter: {location}")
             stmt = stmt.where(Project.location.ilike(f"%{location}%"))
 
-        # 3. 處理工作型態 (work_type)
         if work_type:
-            # 精確比對 (e.g., '遠端', '實體')
-            # (新增日誌) 確認進入 work_type 邏輯
             logger.info(f"Applying work_type filter: {work_type}")
             stmt = stmt.where(Project.work_type == work_type)
 
-        # (新增日誌) 打印最終生成的 SQL (近似)
-        # 注意：這只是近似 SQL，參數可能未完全綁定，但有助於理解結構
-        try:
-            compiled_stmt = stmt.compile(compile_kwargs={"literal_binds": True})
-            logger.info(f"Compiled SQL (approx): {compiled_stmt}")
-        except Exception as e:
-            logger.warning(f"Could not compile SQL for logging: {e}")
-        
-        # (重要) 
-        # 1. 使用 distinct() 確保如果一個案件符合多個標籤，它在列表中只出現一次。
-        # 2. 由於 'lazy="selectin"' 的機制，skills 會在這次查詢中被自動載入。
-        result = await self.db.execute(stmt.distinct())
-        
+        # 分頁查詢
+        result = await self.db.execute(stmt.distinct().limit(limit).offset(offset))
         return result.scalars().all()
 
-    # 獲取所有「招募中」的案件 (包含技能)
+    # (新增) 計算搜尋結果總數
+    async def count_projects(
+        self,
+        tag_ids: Optional[List[str]] = None,
+        location: Optional[str] = None,
+        work_type: Optional[str] = None
+    ) -> int:
+        """
+        計算符合條件的案件總數
+        """
+        # 使用 count(distinct id) 避免因 join 造成的重複計算
+        stmt = select(func.count(func.distinct(Project.project_id)))
+
+        if tag_ids:
+            subq = (
+                select(ProjectSkillTag.project_id)
+                .where(ProjectSkillTag.tag_id.in_(tag_ids))
+                .group_by(ProjectSkillTag.project_id)
+                .having(func.count(func.distinct(ProjectSkillTag.tag_id)) == len(tag_ids))
+                .subquery()
+            )
+            stmt = stmt.where(Project.project_id.in_(select(subq.c.project_id)))
+
+        if location:
+            stmt = stmt.where(Project.location.ilike(f"%{location}%"))
+
+        if work_type:
+            stmt = stmt.where(Project.work_type == work_type)
+
+        result = await self.db.execute(stmt)
+        return result.scalar() or 0
+
+    # ... (list_active_projects_with_skills, list_projects_by_employer_id 保持不變) ...
     async def list_active_projects_with_skills(self) -> List[Project]:
-        """
-        獲取所有 '招募中' 的案件，並預先載入技能
-        """
-        # (重要)
-        # 由於 Model 已設定 lazy="selectin"，
-        # 我們只需查詢 Project 並過濾 status，
-        # SQLAlchemy 會自動處理 'skills' 和 'skills.tag' 的 Eager Loading
         stmt = select(Project).where(Project.status == '招募中')
-
-        # (重要：新增 Eager Loading 策略)
-        # 這裡也必須載入 Project.employer (User)
-        # 接著載入 User.employer_profile (EmployerProfile)
         stmt = stmt.options(
             joinedload(Project.employer).
             selectinload(User.employer_profile)
         )
-
         result = await self.db.execute(stmt)
         return result.scalars().all()
     
-    # 查看特定雇主的所有案件
     async def list_projects_by_employer_id(self, employer_id: str) -> List[Project]:
-        """
-        查詢特定雇主的所有案件 (包含技能)
-        """
-        # 依舊利用 lazy="selectin" 自動載入 skills
-        stmt = select(Project).where(Project.employer_id == employer_id).order_by(Project.created_at.desc()) # 按建立時間排序
-
-        # (重要：新增 Eager Loading 策略)
-        # 這裡也必須載入 Project.employer (User)
-        # 接著載入 User.employer_profile (EmployerProfile)
+        stmt = select(Project).where(Project.employer_id == employer_id).order_by(Project.created_at.desc())
         stmt = stmt.options(
             joinedload(Project.employer).
             selectinload(User.employer_profile)
         )
-        # (修改結束)
-        
         result = await self.db.execute(stmt)
         return result.scalars().all()
     
-    # (新增) 需求二：通用的更新方法
     async def update_project(self, project: Project) -> Project:
-        """
-        (U) 儲存對現有 Project 物件的變更
-        """
         await self.db.commit()
         await self.db.refresh(project)
-        # (重要) commit 後，我們需要重新獲取 Eager Loaded 的版本
+        # (注意) 搜尋改為分頁且移除快取後，這裡其實不需要清除 "project:list:*" 了
+        await redis_manager.delete_keys_by_pattern("project:list:*")
+        await redis_manager.delete_key(f"project:view:{project.project_id}")
+
+        logger.info(f"Cleared cache for project:view:{project.project_id} after update")
         refreshed_project = await self.get_project_by_id(project.project_id)
+        logger.info(f"Re-fetched project after update: {refreshed_project}")
         if refreshed_project is None:
-             # 理論上不可能
             raise HTTPException(status_code=500, detail="Failed to re-fetch project after update")
         return refreshed_project
 
-    # (新增) 需求二：更新案件技能標籤
     async def update_project_skills(self, project_id: str, tag_ids: List[str]):
-        """
-        (U) 覆蓋案件的技能標籤
-        """
-        # 1. 刪除舊標籤
         stmt_delete = delete(ProjectSkillTag).where(
             ProjectSkillTag.project_id == project_id
         )
         await self.db.execute(stmt_delete)
-        await self.db.flush() # 確保 DELETE 執行
+        await self.db.flush()
 
-        # 2. 新增新標籤
         new_skill_links = []
         for tag_id in tag_ids:
-            new_link = ProjectSkillTag(
-                project_skill_tag_id=str(uuid.uuid4()),
-                project_id=project_id,
-                tag_id=tag_id
+            new_skill_links.append(
+                ProjectSkillTag(
+                    project_skill_tag_id=str(uuid.uuid4()),
+                    project_id=project_id,
+                    tag_id=tag_id
+                )
             )
-            new_skill_links.append(new_link)
         
         if new_skill_links:
             self.db.add_all(new_skill_links)
-        
-        # (注意) commit 由上層的 update_project 執行

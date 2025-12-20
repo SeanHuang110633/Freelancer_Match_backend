@@ -1,0 +1,113 @@
+version: "3.8"
+
+services:
+  # 1. [新增] 模擬 Cloud Run Load Balancer
+  # 這是外部流量的唯一入口，負責將請求分發給 3 個 backend 實例
+  load_balancer:
+    image: nginx:alpine
+    container_name: cloud_run_lb_simulator
+    volumes:
+      # 將本機的 Nginx 設定檔掛載進去
+      - ./nginx.stress.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:80" # Locust 測試請打 localhost:8000
+    depends_on:
+      - backend_system
+    networks:
+      - system_test_net
+
+  # 2. 系統測試專用資料庫
+  db_system:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: freelancer_system_db
+    # 內部測試用，若要在外部連線觀察可保留 port mapping
+    ports:
+      - "3308:3306"
+    volumes:
+      - ./new_backup.sql:/docker-entrypoint-initdb.d/init.sql
+    # 雖然本地 MySQL 很強，但後端連線池會限制它，所以這裡保持預設即可
+    command: >
+      --default-authentication-plugin=mysql_native_password 
+      --general-log=0 
+      --slow-query-log=0
+      --max_connections=1000
+      --innodb_buffer_pool_size=512M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10 # (修改) 最多重試 10 次
+      start_period: 60s # (新增) 給它 60 秒的「免死金牌」時間來初始化資料
+    networks:
+      - system_test_net
+
+  # 3. Redis (模擬 Upstash)
+  redis_system:
+    image: redis:alpine
+    networks:
+      - system_test_net
+
+  # 4. GCS 模擬器
+  gcs_emulator:
+    image: fsouza/fake-gcs-server
+    command: -scheme http
+    ports:
+      - "4443:4443"
+    volumes:
+      - ./data/fake-gcs:/data
+    networks:
+      - system_test_net
+
+  # 5. 後端 API 服務 (模擬 Cloud Run)
+  backend_system:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 【重要】移除 container_name，因為我們要跑多個複本，名稱衝突會報錯
+    # container_name: freelancer_backend_system
+
+    # 【關鍵配置】模擬 Cloud Run 的水平擴展與資源限制
+    deploy:
+      mode: replicated
+      replicas: 3 # 開啟 3 個實例 (模擬自動擴展後的狀態)
+      resources:
+        limits:
+          cpus: "1.0" # 限制每個實例 1 vCPU (模擬免費版算力)
+          memory: 512M # 限制每個實例 512MB RAM
+
+    depends_on:
+      db_system:
+        condition: service_healthy
+      redis_system:
+        condition: service_started
+      gcs_emulator:
+        condition: service_started
+
+    environment:
+      PORT: 8000 # 容器內部監聽 8000 (對應 Nginx upstream)
+      DATABASE_URL: mysql+aiomysql://root:root@db_system:3306/freelancer_system_db
+      REDIS_URL: redis://redis_system:6379
+      JWT_SECRET_KEY: system_test_secret_key
+
+      # GCS 設定
+      FILE_STORAGE_MODE: gcs
+      GCS_BUCKET_NAME: test-bucket
+      STORAGE_EMULATOR_HOST: http://gcs_emulator:4443
+
+      # 【模擬 Aiven/Cloud Run 免費版限制】
+      # 總連線數限制 20，分給 3 個實例，每個實例分配 5 個
+      # 3 * 5 = 15 < 20 (安全)
+      DB_POOL_SIZE: 5
+      DB_MAX_OVERFLOW: 0 # 嚴格禁止溢出，因為 Aiven 會直接拒絕
+
+      # Redis 連線數較寬裕 (Upstash 免費版 100)
+      REDIS_POOL_SIZE: 20
+
+    networks:
+      - system_test_net
+
+networks:
+  system_test_net:
+    driver: bridge

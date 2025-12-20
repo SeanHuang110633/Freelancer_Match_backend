@@ -5,6 +5,10 @@ from app.models.user import User
 from fastapi import HTTPException, status # (新增)
 from app.schemas.user_schema import UserCreate # (新增)
 import uuid # (新增)
+import logging # (新增)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__) # (新增) 取得 logger   
 
 class AuthService:
     def __init__(self, db: AsyncSession):
@@ -37,13 +41,22 @@ class AuthService:
         """
         處理使用者註冊
         """
-        # 1. 檢查 Email 是否已被註冊
+        # 1.2 檢查 email 格式是否正確
+        logging.info(f"Registering user with email: {user_create.email}")
+        if "@" not in user_create.email or "." not in user_create.email.split("@")[-1]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid email format.",
+            )
+        
+        # 1.1 檢查 Email 是否已被註冊
         existing_user = await self.user_repo.get_user_by_email(user_create.email)
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="此 Email 已經被註冊",
+                detail="This email is already registered.",
             )
+        
             
         # 2. 雜湊密碼 (使用我們 security.py 中的函式)
         hashed_password = get_password_hash(user_create.password)

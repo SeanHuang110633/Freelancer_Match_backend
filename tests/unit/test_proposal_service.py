@@ -383,3 +383,92 @@ async def test_update_proposal_status_fail_invalid_status(mock_db_session, mock_
     with pytest.raises(HTTPException) as exc:
         await service.update_proposal_status("p1", "亂寫的狀態", mock_user_employer)
     assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_not_found(mock_db_session, mock_user_employer, mocker):
+    """測試：提案不存在 (404) for update_proposal_status"""
+    mocker.patch("app.services.proposal_service.get_storage_provider")
+    service = ProposalService(mock_db_session)
+    mocker.patch.object(service.proposal_repo, 'get_proposal_by_id_with_project', return_value=None)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_proposal_status("p1", "已接受", mock_user_employer)
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_fail_permission(mock_db_session, mock_user_employer, mocker):
+    """測試：非雇主修改提案狀態 (403)"""
+    mocker.patch("app.services.proposal_service.get_storage_provider")
+    service = ProposalService(mock_db_session)
+
+    mock_proposal = Proposal(
+        proposal_id="p1",
+        status="已提交",
+        freelancer_id="w1",
+        project=Project(employer_id="someone_else", title="案子")
+    )
+    mocker.patch.object(service.proposal_repo, 'get_proposal_by_id_with_project', return_value=mock_proposal)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_proposal_status("p1", "已接受", mock_user_employer)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_fail_already_processed(mock_db_session, mock_user_employer, mocker):
+    """測試：提案已被處理，無法再變更狀態 (400)"""
+    mocker.patch("app.services.proposal_service.get_storage_provider")
+    service = ProposalService(mock_db_session)
+
+    mock_proposal = Proposal(
+        proposal_id="p1",
+        status="已拒絕",
+        freelancer_id="w1",
+        project=Project(employer_id=mock_user_employer.user_id, title="案子")
+    )
+    mocker.patch.object(service.proposal_repo, 'get_proposal_by_id_with_project', return_value=mock_proposal)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_proposal_status("p1", "已接受", mock_user_employer)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_reject_triggers_notification(mock_db_session, mock_user_employer, mocker):
+    """測試：雇主拒絕提案會通知工作者 (已拒絕)"""
+    mocker.patch("app.services.proposal_service.get_storage_provider")
+    service = ProposalService(mock_db_session)
+
+    mock_proposal = Proposal(
+        proposal_id="p1",
+        status="已提交",
+        freelancer_id="w1",
+        project=Project(employer_id=mock_user_employer.user_id, title="案子")
+    )
+    mocker.patch.object(service.proposal_repo, 'get_proposal_by_id_with_project', return_value=mock_proposal)
+    mock_update = mocker.patch.object(service.proposal_repo, 'update_proposal', return_value=mock_proposal)
+    mock_notify = mocker.patch.object(service.notification_service, 'create_notification', new_callable=AsyncMock)
+
+    await service.update_proposal_status("p1", "已拒絕", mock_user_employer)
+
+    assert mock_proposal.status == "已拒絕"
+    mock_notify.assert_called_once()
+    mock_update.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_details_success(mock_db_session, mock_user_freelancer, mocker):
+    """測試：工作者成功取得自己的提案詳情"""
+    mocker.patch("app.services.proposal_service.get_storage_provider")
+    service = ProposalService(mock_db_session)
+
+    mock_proposal = Proposal(
+        proposal_id="p1",
+        freelancer_id=mock_user_freelancer.user_id
+    )
+    mocker.patch.object(service.proposal_repo, 'get_proposal_by_id_with_details', return_value=mock_proposal)
+
+    result = await service.get_proposal_details("p1", mock_user_freelancer)
+    assert result.proposal_id == "p1"

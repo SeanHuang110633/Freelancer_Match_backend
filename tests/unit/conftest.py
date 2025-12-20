@@ -112,3 +112,32 @@ def set_unit_test_env():
     settings.REDIS_URL = "redis://mock-redis-host:6379/0"
     settings.FILE_STORAGE_MODE = "local"
     settings.JWT_SECRET_KEY = "test_secret_key_for_unit_tests"
+
+# --- 【關鍵新增】攔截 RedisManager 與 Decorator ---
+
+@pytest.fixture(autouse=True)
+def mock_redis_manager(monkeypatch):
+    """
+    (自動執行) Mock 掉 app.core.redis.redis_manager
+    讓 @cached 裝飾器與 Repo 內的 redis 操作全部無效化，
+    確保單元測試專注於 SQL 邏輯，而非 Redis 狀態。
+    """
+    from app.core.redis import redis_manager
+    
+    # 1. 模擬 Cache Miss (get 回傳 None -> 強制執行原函式)
+    async def mock_get(*args, **kwargs):
+        return None
+    
+    # 2. 模擬 Set 成功 (不做任何事)
+    async def mock_set(*args, **kwargs):
+        pass
+        
+    # 3. 模擬 Delete 成功 (不做任何事)
+    async def mock_delete(*args, **kwargs):
+        pass
+
+    # 使用 monkeypatch 取代實例方法
+    monkeypatch.setattr(redis_manager, "get_value", mock_get)
+    monkeypatch.setattr(redis_manager, "set_value", mock_set)
+    monkeypatch.setattr(redis_manager, "delete_key", mock_delete)
+    monkeypatch.setattr(redis_manager, "delete_keys_by_pattern", mock_delete)

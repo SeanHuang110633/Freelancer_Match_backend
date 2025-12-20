@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from datetime import datetime
 
-# 基礎評分欄位 (數值範圍 1.0 - 5.0)
+# 基礎評分欄位 (數值範圍 0.0 - 5.0)
 class ReviewBase(BaseModel):
     comment: Optional[str] = None
 
@@ -15,16 +15,16 @@ class ReviewCreate(ReviewBase):
     contract_id: str
     
     # --- A. 雇主填寫 (評工作者) ---
-    rating_communication_fw: Optional[float] = Field(None, ge=1, le=5)
-    rating_professionalism_fw: Optional[float] = Field(None, ge=1, le=5)
-    rating_punctuality_fw: Optional[float] = Field(None, ge=1, le=5)
-    rating_quality_fw: Optional[float] = Field(None, ge=1, le=5)
+    rating_communication_fw: Optional[float] = Field(None, ge=0, le=5)
+    rating_professionalism_fw: Optional[float] = Field(None, ge=0, le=5)
+    rating_punctuality_fw: Optional[float] = Field(None, ge=0, le=5)
+    rating_quality_fw: Optional[float] = Field(None, ge=0, le=5)
 
     # --- B. 工作者填寫 (評雇主) ---
-    rating_communication_we: Optional[float] = Field(None, ge=1, le=5)
-    rating_quality_we: Optional[float] = Field(None, ge=1, le=5)
-    rating_compensation_we: Optional[float] = Field(None, ge=1, le=5)
-    rating_process_we: Optional[float] = Field(None, ge=1, le=5)
+    rating_communication_we: Optional[float] = Field(None, ge=0, le=5)
+    rating_quality_we: Optional[float] = Field(None, ge=0, le=5)
+    rating_compensation_we: Optional[float] = Field(None, ge=0, le=5)
+    rating_process_we: Optional[float] = Field(None, ge=0, le=5)
 
 # 評價輸出 (Output)
 class ReviewOut(ReviewBase):
